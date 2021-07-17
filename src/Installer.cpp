@@ -43,7 +43,7 @@
 #include "Version.h"
 #include "Installer.h"
 
-#include "ifilter/PdfFilter.h"
+#include "ifilter/PdfFilterClsid.h"
 #include "previewer/PdfPreview.h"
 
 // if 1, adds checkbox to register as default PDF viewer
@@ -80,9 +80,6 @@ static bool gWasPreviewInstaller = false;
 
 int currProgress = 0;
 static void ProgressStep() {
-    if (gIsRaMicroBuild) {
-        return;
-    }
     currProgress++;
     if (gProgressBar) {
         // possibly dangerous as is called on a thread
@@ -122,7 +119,7 @@ bool ExtractFiles(lzma::SimpleArchive* archive, const WCHAR* destDir) {
                 _TR("The installer has been corrupted. Please download it again.\nSorry for the inconvenience!"));
             return false;
         }
-        AutoFreeWstr fileName = strconv::Utf8ToWstr(fi->name);
+        auto fileName = ToWstrTemp(fi->name);
         AutoFreeWstr filePath = path::Join(destDir, fileName);
 
         std::span<u8> d = {uncompressed, fi->uncompressedSize};
@@ -152,14 +149,15 @@ static bool CreateInstallationDirectory() {
 
 bool CopySelfToDir(const WCHAR* destDir) {
     auto exePath = GetExePath();
-    auto exeName = GetExeName();
+    auto exeName = GetExeNameTemp();
     auto* dstPath = path::Join(destDir, exeName);
     BOOL failIfExists = FALSE;
     BOOL ok = ::CopyFileW(exePath, dstPath, failIfExists);
     // strip zone identifier (if exists) to avoid windows
     // complaining when launching the file
     // https://github.com/sumatrapdfreader/sumatrapdf/issues/1782
-    file::DeleteZoneIdentifier(dstPath);
+    auto dstPathA = ToUtf8Temp(dstPath);
+    file::DeleteZoneIdentifier(dstPathA);
     free(dstPath);
     return ok;
 }
@@ -168,18 +166,26 @@ static void CopySettingsFile() {
     // up to 3.1.2 we stored settings in %APPDATA%
     // after that we use %LOCALAPPDATA%
     // copy the settings from old directory
-    AutoFreeWstr srcDir = GetSpecialFolder(CSIDL_APPDATA, false);
-    AutoFreeWstr dstDir = GetSpecialFolder(CSIDL_LOCAL_APPDATA, false);
 
-    const WCHAR* appName = GetAppName();
-    const WCHAR* prefsFileName = prefs::GetSettingsFileNameNoFree();
-    AutoFreeWstr srcPath = path::Join(srcDir.data, appName, prefsFileName);
-    AutoFreeWstr dstPath = path::Join(dstDir.data, appName, prefsFileName);
+    // seen a crash when running elevated
+    TempWstr srcDir = GetSpecialFolderTemp(CSIDL_APPDATA, false);
+    if (srcDir.empty()) {
+        return;
+    }
+    TempWstr dstDir = GetSpecialFolderTemp(CSIDL_LOCAL_APPDATA, false);
+    if (dstDir.empty()) {
+        return;
+    }
+
+    const WCHAR* appName = GetAppNameTemp();
+    const WCHAR* prefsFileName = prefs::GetSettingsFileNameTemp();
+    AutoFreeWstr srcPath = path::Join(srcDir.Get(), appName, prefsFileName);
+    AutoFreeWstr dstPath = path::Join(dstDir.Get(), appName, prefsFileName);
 
     // don't over-write
     BOOL failIfExists = true;
     // don't care if it fails or not
-    ::CopyFileW(srcPath.data, dstPath.data, failIfExists);
+    ::CopyFileW(srcPath.Get(), dstPath.Get(), failIfExists);
     log("did copy settings file\n");
 }
 
@@ -188,7 +194,7 @@ static bool ExtractInstallerFiles() {
         return false;
     }
 
-    bool ok = CopySelfToDir(GetInstallDirNoFree());
+    bool ok = CopySelfToDir(GetInstallDirTemp());
     if (!ok) {
         return false;
     }
@@ -196,15 +202,6 @@ static bool ExtractInstallerFiles() {
 
     // on error, ExtractFiles() shows error message itself
     return ExtractFiles(&gArchive, gCli->installDir);
-}
-
-/* Caller needs to free() the result. */
-static WCHAR* GetDefaultPdfViewer() {
-    AutoFreeWstr buf = ReadRegStr(HKEY_CURRENT_USER, REG_EXPLORER_PDF_EXT L"\\UserChoice", PROG_ID);
-    if (buf) {
-        return buf.StealData();
-    }
-    return ReadRegStr(HKEY_CLASSES_ROOT, L".pdf", nullptr);
 }
 
 // Note: doesn't handle (total) sizes above 4GB
@@ -241,13 +238,13 @@ static WCHAR* GetInstallDate() {
 static bool WriteUninstallerRegistryInfo(HKEY hkey) {
     bool ok = true;
 
-    AutoFreeWstr installedExePath = GetInstallationFilePath(GetExeName());
+    AutoFreeWstr installedExePath = GetInstallationFilePath(GetExeNameTemp());
     AutoFreeWstr installDate = GetInstallDate();
-    WCHAR* installDir = GetInstallDirNoFree();
+    WCHAR* installDir = GetInstallDirTemp();
     WCHAR* uninstallerPath = installedExePath; // same as
     AutoFreeWstr uninstallCmdLine = str::Format(L"\"%s\" -uninstall", uninstallerPath);
 
-    const WCHAR* appName = GetAppName();
+    const WCHAR* appName = GetAppNameTemp();
     AutoFreeWstr regPathUninst = GetRegPathUninst(appName);
     // path to installed executable (or "$path,0" to force the first icon)
     ok &= WriteRegStr(hkey, regPathUninst, L"DisplayIcon", installedExePath);
@@ -291,13 +288,13 @@ static bool WriteUninstallerRegistryInfos() {
 static bool WriteExtendedFileExtensionInfo(HKEY hkey) {
     bool ok = true;
 
-    const WCHAR* exeName = GetExeName();
+    const WCHAR* exeName = GetExeNameTemp();
     AutoFreeWstr exePath = GetInstalledExePath();
     if (HKEY_LOCAL_MACHINE == hkey) {
         AutoFreeWstr key = str::Join(L"Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\", exeName);
         ok &= WriteRegStr(hkey, key, nullptr, exePath);
     }
-    AutoFreeWstr REG_CLASSES_APPS = GetRegClassesApps(GetAppName());
+    AutoFreeWstr REG_CLASSES_APPS = GetRegClassesApps(GetAppNameTemp());
 
     // mirroring some of what DoAssociateExeWithPdfExtension() does (cf. AppTools.cpp)
     AutoFreeWstr iconPath = str::Join(exePath, L",1");
@@ -369,9 +366,7 @@ static void CreateAppShortcuts() {
     log("did create app shortcuts\n");
 }
 
-void onRaMicroInstallerFinished();
-
-static DWORD WINAPI InstallerThread([[maybe_unused]] LPVOID data) {
+static DWORD WINAPI InstallerThread(__unused LPVOID data) {
     success = false;
     const WCHAR* appName{nullptr};
     const WCHAR* exeName{nullptr};
@@ -399,17 +394,15 @@ static DWORD WINAPI InstallerThread([[maybe_unused]] LPVOID data) {
     gWasSearchFilterInstalled = false;
     gWasPreviewInstaller = false;
 
-    if (!gIsRaMicroBuild) {
-        if (gCli->withFilter) {
-            RegisterSearchFilter(false);
-        }
-
-        if (gCli->withPreview) {
-            RegisterPreviewer(false);
-        }
-
-        UninstallBrowserPlugin();
+    if (gCli->withFilter) {
+        RegisterSearchFilter(false);
     }
+
+    if (gCli->withPreview) {
+        RegisterPreviewer(false);
+    }
+
+    UninstallBrowserPlugin();
 
     CreateAppShortcuts();
 
@@ -427,8 +420,8 @@ static DWORD WINAPI InstallerThread([[maybe_unused]] LPVOID data) {
         NotifyFailed(_TR("Failed to write the extended file extension information to the registry"));
     }
 
-    appName = GetAppName();
-    exeName = GetExeName();
+    appName = GetAppNameTemp();
+    exeName = GetExeNameTemp();
     if (!ListAsDefaultProgramWin10(appName, exeName, GetSupportedExts())) {
         log("Failed to register as default program on win 10\n");
         NotifyFailed(_TR("Failed to register as default program on win 10"));
@@ -437,10 +430,6 @@ static DWORD WINAPI InstallerThread([[maybe_unused]] LPVOID data) {
     ProgressStep();
     log("Installer thread finished\n");
 Error:
-    if (gIsRaMicroBuild) {
-        onRaMicroInstallerFinished();
-        return 0;
-    }
     // TODO: roll back installation on failure (restore previous installation!)
     if (gHwndFrame) {
         if (!gCli->silent) {
@@ -478,7 +467,7 @@ static void OnButtonInstall() {
 
     WCHAR* userInstallDir = win::GetText(gTextboxInstDir->hwnd);
     if (!str::IsEmpty(userInstallDir)) {
-        str::ReplacePtr(&gCli->installDir, userInstallDir);
+        str::ReplaceWithCopy(&gCli->installDir, userInstallDir);
     }
     free(userInstallDir);
 
@@ -623,8 +612,8 @@ static int CALLBACK BrowseCallbackProc(HWND hwnd, UINT msg, LPARAM lp, LPARAM lp
     return 0;
 }
 
-static bool BrowseForFolder(HWND hwnd, const WCHAR* initialFolder, const WCHAR* caption, WCHAR* buf, DWORD cchBufSize) {
-    if (buf == nullptr || cchBufSize < MAX_PATH) {
+static bool BrowseForFolder(HWND hwnd, const WCHAR* initialFolder, const WCHAR* caption, WCHAR* buf, DWORD cchBuf) {
+    if (buf == nullptr || cchBuf < MAX_PATH) {
         return false;
     }
 
@@ -672,7 +661,7 @@ static void OnButtonBrowse() {
     AutoFreeWstr installPath = str::Dup(path);
     // force paths that aren't entered manually to end in ...\SumatraPDF
     // to prevent unintended installations into e.g. %ProgramFiles% itself
-    const WCHAR* appName = GetAppName();
+    const WCHAR* appName = GetAppNameTemp();
     AutoFreeWstr end = str::Join(L"\\", appName);
     if (!str::EndsWithI(path, end)) {
         installPath = path::Join(path, appName);
@@ -693,6 +682,17 @@ static bool InstallerOnWmCommand(WPARAM wp) {
     }
     return true;
 }
+
+#if ENABLE_REGISTER_DEFAULT
+/* Caller needs to free() the result. */
+static WCHAR* GetDefaultPdfViewer() {
+    AutoFreeWstr buf = ReadRegStr(HKEY_CURRENT_USER, REG_EXPLORER_PDF_EXT L"\\UserChoice", PROG_ID);
+    if (buf) {
+        return buf.StealData();
+    }
+    return ReadRegStr(HKEY_CLASSES_ROOT, L".pdf", nullptr);
+}
+#endif
 
 //[ ACCESSKEY_GROUP Installer
 static void OnCreateWindow(HWND hwnd) {
@@ -747,7 +747,7 @@ static void OnCreateWindow(HWND hwnd) {
 
 #if ENABLE_REGISTER_DEFAULT
     AutoFreeWstr defaultViewer(GetDefaultPdfViewer());
-    const WCHAR* appName = GetAppName();
+    const WCHAR* appName = GetAppNameTemp();
     BOOL hasOtherViewer = !str::EqI(defaultViewer, appName);
 
     BOOL isSumatraDefaultViewer = defaultViewer && !hasOtherViewer;
@@ -824,7 +824,7 @@ static void CreateMainWindow() {
 }
 
 static WCHAR* GetInstallationDir() {
-    const WCHAR* appName = GetAppName();
+    const WCHAR* appName = GetAppNameTemp();
     AutoFreeWstr regPath = GetRegPathUninst(appName);
     AutoFreeWstr dir = ReadRegStr2(regPath, L"InstallLocation");
     if (dir) {
@@ -837,10 +837,9 @@ static WCHAR* GetInstallationDir() {
     }
 
     // fall back to %APPLOCALDATA%\SumatraPDF
-    WCHAR* dataDir = GetSpecialFolder(CSIDL_LOCAL_APPDATA, true);
+    WCHAR* dataDir = GetSpecialFolderTemp(CSIDL_LOCAL_APPDATA, true).Get();
     if (dataDir) {
         WCHAR* res = path::Join(dataDir, appName);
-        str::Free(dataDir);
         return res;
     }
 
@@ -991,15 +990,13 @@ static bool OpenEmbeddedFilesArchive() {
     return true;
 }
 
-int RunInstallerRaMicro();
-
 static char* PickInstallerLogPath() {
-    AutoFreeWstr dir = GetSpecialFolder(CSIDL_LOCAL_APPDATA, true);
-    if (!dir) {
+    TempWstr dir = GetSpecialFolderTemp(CSIDL_LOCAL_APPDATA, true);
+    if (!dir.Get()) {
         return nullptr;
     }
-    AutoFreeStr dira = strconv::WstrToUtf8(dir);
-    return path::JoinUtf(dira, "sumatra-install-log.txt", nullptr);
+    auto dirA = ToUtf8Temp(dir.AsView());
+    return path::Join(dirA, "sumatra-install-log.txt", nullptr);
 }
 
 static void StartInstallerLogging() {
@@ -1022,7 +1019,7 @@ static void RelaunchElevatedIfNotDebug() {
         return;
     }
     AutoFreeWstr exePath = GetExePath();
-    strconv::StackWstrToUtf8 exePathA = exePath.AsView();
+    TempStr exePathA = ToUtf8Temp(exePath.AsView());
     logf("Re-launching '%s' as elevated\n", exePathA.Get());
     WCHAR* cmdline = GetCommandLineW(); // not owning the memory
     LaunchElevated(exePath, cmdline);
@@ -1041,10 +1038,6 @@ int RunInstaller(Flags* cli) {
     logf(L"Starting installer from '%s'\n", gCli->installDir);
 
     RelaunchElevatedIfNotDebug();
-
-    if (gIsRaMicroBuild) {
-        return RunInstallerRaMicro();
-    }
 
     if (!gCli->silent && !IsProcessAndOsArchSame()) {
         logf("Mismatch of the OS and executable arch\n");
@@ -1130,250 +1123,6 @@ int RunInstaller(Flags* cli) {
         RegisterPreviewer(true);
     }
     log("Installer finished\n");
-Exit:
-    free(firstError);
-
-    return ret;
-}
-
-/* ra-micro installer */
-
-using std::placeholders::_1;
-
-struct RaMicroInstallerWindow {
-    HWND hwnd = nullptr;
-    Window* mainWindow = nullptr;
-    ILayout* mainLayout = nullptr;
-    Gdiplus::Bitmap* bmpSplash = nullptr;
-
-    // not owned by us but by mainLayout
-    ButtonCtrl* btnInstall = nullptr;
-    ButtonCtrl* btnExit = nullptr;
-    StaticCtrl* finishedText = nullptr;
-
-    bool finished = false;
-
-    ~RaMicroInstallerWindow();
-
-    void CloseHandler(WindowCloseEvent*);
-    void SizeHandler(SizeEvent*);
-    void Install();
-    void InstallationFinished();
-    void Exit();
-    void MsgHandler(WndEvent*);
-};
-
-static RaMicroInstallerWindow* gRaMicroInstallerWindow = nullptr;
-
-RaMicroInstallerWindow::~RaMicroInstallerWindow() {
-    delete mainLayout;
-    delete mainWindow;
-    delete bmpSplash;
-}
-
-void RaMicroInstallerWindow::MsgHandler(WndEvent* ev) {
-    if (ev->msg == WM_APP_INSTALLATION_FINISHED) {
-        InstallationFinished();
-        ev->didHandle = true;
-        return;
-    }
-}
-
-void RaMicroInstallerWindow::Install() {
-    if (finished) {
-        if (success) {
-            AutoFreeWstr exePath(GetInstalledExePath());
-            RunNonElevated(exePath);
-        }
-        Exit();
-        return;
-    }
-    hThread = CreateThread(nullptr, 0, InstallerThread, nullptr, 0, 0);
-}
-
-static Size layoutAndSize(ILayout* layout, int dx, int dy) {
-    if (dx == 0 || dy == 0) {
-        return {};
-    }
-    return LayoutToSize(layout, {dx, dy});
-}
-
-void RaMicroInstallerWindow::InstallationFinished() {
-    CloseHandle(hThread);
-    hThread = nullptr;
-
-    finished = true;
-    if (success) {
-        btnInstall->SetText("Run RA-Micro");
-    } else {
-        btnInstall->SetText("Exit");
-        finishedText->SetText("Installation failed!");
-    }
-    finishedText->SetIsVisible(true);
-
-    RECT rc = GetClientRect(hwnd);
-    int dx = RectDx(rc);
-    int dy = RectDy(rc);
-    layoutAndSize(mainLayout, dx, dy);
-}
-
-void RaMicroInstallerWindow::Exit() {
-    gRaMicroInstallerWindow->mainWindow->Close();
-}
-
-void RaMicroInstallerWindow::CloseHandler(WindowCloseEvent* ev) {
-    WindowBase* w = (WindowBase*)gRaMicroInstallerWindow->mainWindow;
-    CrashIf(w != ev->w);
-    delete gRaMicroInstallerWindow;
-    gRaMicroInstallerWindow = nullptr;
-    PostQuitMessage(0);
-}
-
-void RaMicroInstallerWindow::SizeHandler(SizeEvent* ev) {
-    int dx = ev->dx;
-    int dy = ev->dy;
-
-    layoutAndSize(mainLayout, dx, dy);
-
-    InvalidateRect(ev->hwnd, nullptr, false);
-    ev->didHandle = true;
-}
-
-void onRaMicroInstallerFinished() {
-    // called on a background thread
-    PostMessageW(gRaMicroInstallerWindow->hwnd, WM_APP_INSTALLATION_FINISHED, 0, 0);
-}
-
-static Gdiplus::Bitmap* LoadRaMicroSplash() {
-    std::span<u8> d = LoadDataResource(IDD_RAMICRO_SPLASH);
-    if (d.empty()) {
-        return nullptr;
-    }
-    return BitmapFromData(d);
-}
-
-static bool CreateRaMicroInstallerWindow() {
-    HMODULE h = GetModuleHandleW(nullptr);
-    WCHAR* iconName = MAKEINTRESOURCEW(GetAppIconID());
-    HICON hIcon = LoadIconW(h, iconName);
-
-    auto win = new RaMicroInstallerWindow();
-    gRaMicroInstallerWindow = win;
-
-    win->bmpSplash = LoadRaMicroSplash();
-    CrashIf(!win->bmpSplash);
-
-    auto w = new Window();
-    w->msgFilter = std::bind(&RaMicroInstallerWindow::MsgHandler, win, _1);
-    w->hIcon = hIcon;
-    // w->backgroundColor = MkRgb((u8)0xee, (u8)0xee, (u8)0xee);
-    w->backgroundColor = MkRgb((u8)0xff, (u8)0xff, (u8)0xff);
-    w->SetTitle("RA-MICRO Installer");
-    int splashDx = (int)win->bmpSplash->GetWidth();
-    int splashDy = (int)win->bmpSplash->GetHeight();
-    int dx = splashDx + DpiScale(32 + 44); // image + padding
-    int dy = splashDy + DpiScale(104);     // image + buttons
-    w->initialSize = {dx, dy};
-    SIZE winSize = {w->initialSize.dx, w->initialSize.dy};
-    w->initialSize = {winSize.cx, winSize.cy};
-    bool ok = w->Create();
-    CrashIf(!ok);
-    win->hwnd = w->hwnd;
-
-    win->mainWindow = w;
-
-    HWND hwnd = win->hwnd;
-    CrashIf(!hwnd);
-
-    // create layout
-    // TODO: image should be centered, the buttons should be on the edges
-    // Probably need to implement a Center layout
-    HBox* buttons = new HBox();
-    buttons->alignMain = MainAxisAlign::SpaceBetween;
-    buttons->alignCross = CrossAxisAlign::CrossEnd;
-
-    /*
-    {
-        auto [l, b] = CreateButtonLayout(hwnd, "Exit", [win]() { win->Exit(); });
-        buttons->addChild(l);
-        win->btnExit = b;
-    }
-    */
-
-    {
-        auto b = CreateButton(hwnd, "Install", [win]() { win->Install(); });
-        buttons->AddChild(b);
-        win->btnInstall = b;
-    }
-
-    VBox* main = new VBox();
-    main->alignMain = MainAxisAlign::SpaceAround;
-    main->alignCross = CrossAxisAlign::CrossCenter;
-
-    ImageCtrl* splashCtrl = new ImageCtrl(hwnd);
-    splashCtrl->bmp = win->bmpSplash;
-    ok = splashCtrl->Create();
-    CrashIf(!ok);
-    main->AddChild(splashCtrl);
-
-    win->finishedText = new StaticCtrl(hwnd);
-    win->finishedText->SetText("Installation finished!");
-    // TODO: bigger font and maybe bold and different color
-    // win->finishedText->SetFont();
-    win->finishedText->Create();
-    win->finishedText->SetIsVisible(false);
-
-    main->AddChild(win->finishedText);
-
-    main->AddChild(buttons);
-
-    auto padding = new Padding(main, DpiScaledInsets(hwnd, 8));
-    win->mainLayout = padding;
-
-    w->onClose = std::bind(&RaMicroInstallerWindow::CloseHandler, win, _1);
-    w->onSize = std::bind(&RaMicroInstallerWindow::SizeHandler, win, _1);
-    w->SetIsVisible(true);
-    return true;
-}
-
-int RunInstallerRaMicro() {
-    int ret = 0;
-    bool ok = true;
-
-    if (!OpenEmbeddedFilesArchive()) {
-        return 1;
-    }
-    gDefaultMsg = _TR("Thank you for choosing RA-MICRO PDF!");
-
-    if (!gCli->installDir) {
-        gCli->installDir = GetInstallationDir();
-    }
-
-    if (gCli->silent) {
-        InstallerThread(nullptr);
-        ret = success ? 0 : 1;
-        goto Exit;
-    }
-
-    ok = CreateRaMicroInstallerWindow();
-    if (!ok) {
-        goto Exit;
-    }
-
-#if 0
-    if (!RegisterWinClass()) {
-        goto Exit;
-    }
-
-    if (!InstanceInit()) {
-        goto Exit;
-    }
-
-    BringWindowToTop(gHwndFrame);
-#endif
-
-    ret = RunApp();
-
 Exit:
     free(firstError);
 

@@ -109,6 +109,7 @@ class ScopedFile {
     }
 };
 
+#if 0
 static Rect ExtractDSCPageSize(const WCHAR* path) {
     char header[1024] = {0};
     file::ReadN(path, header, sizeof(header) - 1);
@@ -131,34 +132,36 @@ static Rect ExtractDSCPageSize(const WCHAR* path) {
 
     return {};
 }
+#endif
 
 static EngineBase* ps2pdf(const WCHAR* path) {
     // TODO: read from gswin32c's stdout instead of using a TEMP file
     AutoFreeWstr shortPath(path::ShortPath(path));
-    AutoFreeWstr tmpFile(path::GetTempPath(L"PsE"));
+    AutoFreeWstr tmpFile(path::GetTempFilePath(L"PsE"));
     ScopedFile tmpFileScope(tmpFile);
     AutoFreeWstr gswin32c(GetGhostscriptPath());
     if (!shortPath || !tmpFile || !gswin32c) {
         return nullptr;
     }
 
-    // try to help Ghostscript determine the intended page size
-    AutoFreeWstr psSetup;
-    Rect page = ExtractDSCPageSize(path);
-    if (!page.IsEmpty()) {
-        psSetup = str::Format(L" << /PageSize [%i %i] >> setpagedevice", page.dx, page.dy);
-    }
-
-    const WCHAR* psSetupStr = psSetup ? psSetup.Get() : L"";
+    // TODO: before gs 9.54 we would call:
+    // Rect page = ExtractDSCPageSize(path);
+    // and use that to add "-c ".setpdfwrite << /PageSize [$dx $dy] >> setpagedevice"
+    // to cmd-line. In 9.54 .setpdfwrite was removed and using it causes
+    // conversion to fail
+    // So we removed use of -c .setpdfwrite completely. Not sure if there's an alternative
+    // way to do it
+    // https://github.com/GravityMedia/Ghostscript/issues/6
+    // https://github.com/sumatrapdfreader/sumatrapdf/issues/1923
     AutoFreeWstr cmdLine = str::Format(
-        L"\"%s\" -q -dSAFER -dNOPAUSE -dBATCH -dEPSCrop -sOutputFile=\"%s\" -sDEVICE=pdfwrite -c "
-        L"\".setpdfwrite%s\" -f \"%s\"",
-        gswin32c.Get(), tmpFile.Get(), psSetupStr, shortPath.Get());
+        L"\"%s\" -q -dSAFER -dNOPAUSE -dBATCH -dEPSCrop -sOutputFile=\"%s\" -sDEVICE=pdfwrite "
+        L"-f \"%s\"",
+        gswin32c.Get(), tmpFile.Get(), shortPath.Get());
 
     {
-        const char* fileName = path::GetBaseNameNoFree(__FILE__);
-        AutoFree gswin = strconv::WstrToUtf8(gswin32c.Get());
-        AutoFree tmpFileName = strconv::WstrToUtf8(path::GetBaseNameNoFree(tmpFile));
+        const char* fileName = path::GetBaseNameTemp(__FILE__);
+        auto gswin = ToUtf8Temp(gswin32c.Get());
+        auto tmpFileName = ToUtf8Temp(path::GetBaseNameTemp(tmpFile));
         logf("- %s:%d: using '%s' for creating '%%TEMP%%\\%s'\n", fileName, __LINE__, gswin.Get(), tmpFileName.Get());
     }
 
@@ -198,7 +201,7 @@ static EngineBase* ps2pdf(const WCHAR* path) {
 }
 
 static EngineBase* psgz2pdf(const WCHAR* fileName) {
-    AutoFreeWstr tmpFile(path::GetTempPath(L"PsE"));
+    AutoFreeWstr tmpFile(path::GetTempFilePath(L"PsE"));
     ScopedFile tmpFileScope(tmpFile);
     if (!tmpFile) {
         return nullptr;
@@ -276,11 +279,11 @@ class EnginePs : public EngineBase {
         return file::ReadFile(fileName);
     }
 
-    bool SaveFileAs(const char* copyFileName, [[maybe_unused]] bool includeUserAnnots = false) override {
+    bool SaveFileAs(const char* copyFileName, __unused bool includeUserAnnots = false) override {
         if (!FileName()) {
             return false;
         }
-        AutoFreeWstr dstPath = strconv::Utf8ToWstr(copyFileName);
+        auto dstPath = ToWstrTemp(copyFileName);
         return CopyFileW(FileName(), dstPath, FALSE);
     }
 

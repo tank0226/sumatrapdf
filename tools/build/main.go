@@ -17,14 +17,14 @@ func verifyReleaseNotInS3Must(ver string) {
 		return
 	}
 	s3Path := s3RelDir + fmt.Sprintf("SumatraPDF-%s-manifest.txt", ver)
-	fatalIf(s3Exists(s3Path), "build '%s' already exists in s3 because '%s' existst\n", ver, s3Path)
+	panicIfs3Exists(s3Path), "build '%s' already exists in s3 because '%s' existst\n", ver, s3Path)
 }
 
 func buildAnalyze() {
 	fmt.Printf("Analyze build\n")
 	// I assume 64-bit build will catch more issues
 	slnPath := filepath.Join(vsVer, "SumatraPDF.sln")
-	out, _ := runMsbuildGetOutput(true, slnPath, "/t:Installer", "/p:Configuration=ReleasePrefast;Platform=x64", "/m")
+	out, _ := runMsbuildGetOutput(true, slnPath, "/t:Installer:Rebuild", "/p:Configuration=ReleasePrefast;Platform=x64", "/m")
 
 	if true {
 		err2 := ioutil.WriteFile("analyze-output.txt", out, 0644)

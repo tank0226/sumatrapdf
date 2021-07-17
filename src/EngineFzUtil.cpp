@@ -21,7 +21,6 @@ extern "C" {
 #include "AppColors.h"
 #include "wingui/TreeModel.h"
 
-#include "Annotation.h"
 #include "EngineBase.h"
 #include "EngineFzUtil.h"
 
@@ -61,7 +60,7 @@ WCHAR* pdf_to_wstr(fz_context* ctx, pdf_obj* obj) {
 }
 
 // some PDF documents contain control characters in outline titles or /Info properties
-// we replace them with spaces and cleanup for display with NormalizeWS()
+// we replace them with spaces and cleanup for display with NormalizeWSInPlace()
 WCHAR* pdf_clean_string(WCHAR* s) {
     if (!s) {
         return nullptr;
@@ -74,7 +73,7 @@ WCHAR* pdf_clean_string(WCHAR* s) {
         }
         curr++;
     }
-    str::NormalizeWS(s);
+    str::NormalizeWSInPlace(s);
     return s;
 }
 
@@ -104,7 +103,7 @@ struct istream_filter {
     u8 buf[4096];
 };
 
-extern "C" int next_istream(fz_context* ctx, fz_stream* stm, [[maybe_unused]] size_t max) {
+extern "C" int next_istream(fz_context* ctx, fz_stream* stm, __unused size_t max) {
     istream_filter* state = (istream_filter*)stm->state;
     ULONG cbRead = sizeof(state->buf);
     HRESULT res = state->stream->Read(state->buf, sizeof(state->buf), &cbRead);
@@ -171,7 +170,7 @@ void* fz_memdup(fz_context* ctx, void* p, size_t size) {
 
 fz_stream* fz_open_file2(fz_context* ctx, const WCHAR* filePath) {
     fz_stream* stm = nullptr;
-    AutoFreeStr path = strconv::WstrToUtf8(filePath);
+    auto path = ToUtf8Temp(filePath);
     i64 fileSize = file::GetSize(path.AsView());
     // load small files entirely into memory so that they can be
     // overwritten even by programs that don't open files with FILE_SHARE_READ
@@ -631,7 +630,7 @@ static const WCHAR* LinkifyMultilineText(LinkRectList* list, const WCHAR* pageTe
         end = LinkifyFindEnd(next, start > pageText ? start[-1] : ' ');
         multiline = LinkifyCheckMultiline(pageText, end, coords);
 
-        AutoFreeWstr part(str::DupN(next, end - next));
+        AutoFreeWstr part(str::Dup(next, end - next));
         uri.Set(str::Join(uri, part));
         Rect bbox = coords[next - pageText].Union(coords[end - pageText - 1]);
         list->coords.Append(To_fz_rect(ToRectFl(bbox)));
@@ -727,7 +726,7 @@ LinkRectList* LinkifyText(const WCHAR* pageText, Rect* coords) {
             continue;
         }
 
-        AutoFreeWstr part(str::DupN(start, end - start));
+        AutoFreeWstr part(str::Dup(start, end - start));
         WCHAR* uri = protocol ? str::Join(protocol, part) : part.StealData();
         list->links.Append(uri);
         Rect bbox = coords[start - pageText].Union(coords[end - pageText - 1]);
@@ -867,7 +866,7 @@ static Kind CalcDestKind(fz_link* link, fz_outline* outline) {
         if (pageNo == -1) {
             // TODO: figure out what it could be
             logf("CalcDestKind(): unknown uri: '%s'\n", uri);
-            // SubmitCrashIf(true);
+            // SubmitBugReportIf(true);
             return nullptr;
         }
         return kindDestinationScrollTo;
@@ -884,7 +883,7 @@ static Kind CalcDestKind(fz_link* link, fz_outline* outline) {
 
     logf("CalcDestKind(): unknown uri: '%s'\n", uri);
     // TODO: kindDestinationLaunchEmbedded, kindDestinationLaunchURL, named destination
-    // SubmitCrashIf(true);
+    // SubmitBugReportIf(true);
     return nullptr;
 #if 0
     switch (link->kind) {
@@ -950,7 +949,7 @@ static RectF CalcDestRect(fz_link* link, fz_outline* outline) {
     float y = 0;
     int pageNo = resolve_link(uri, &x, &y);
     if (pageNo == -1) {
-        // SubmitCrashIf(pageNo == -1);
+        // SubmitBugReportIf(pageNo == -1);
         return result;
     }
 
@@ -1229,54 +1228,31 @@ fz_image* fz_find_image_at_idx(fz_context* ctx, FzPageInfo* pageInfo, int idx) {
     return nullptr;
 }
 
-static COLORREF MkRgbFloat(float r, float g, float b) {
+static COLORREF MkColorFromFloat(float r, float g, float b) {
     u8 rb = (u8)(r * 255.0f);
     u8 gb = (u8)(g * 255.0f);
     u8 bb = (u8)(b * 255.0f);
-    return MkRgb(rb, gb, bb);
+    return MkColor(rb, gb, bb);
 }
 
 /*
     n = 1 (grey), 3 (rgb) or 4 (cmyk).
 */
-COLORREF FromPdfColor(fz_context* ctx, int n, float color[4]) {
+COLORREF ColorRefFromPdfFloat(fz_context* ctx, int n, float color[4]) {
     if (n == 0) {
         return ColorUnset;
     }
     if (n == 1) {
-        return MkRgbFloat(color[0], color[0], color[0]);
+        return MkColorFromFloat(color[0], color[0], color[0]);
     }
     if (n == 3) {
-        return MkRgbFloat(color[0], color[1], color[2]);
+        return MkColorFromFloat(color[0], color[1], color[2]);
     }
     if (n == 4) {
         float rgb[4];
         fz_convert_color(ctx, fz_device_cmyk(ctx), color, fz_device_rgb(ctx), rgb, NULL, fz_default_color_params);
-        return MkRgbFloat(rgb[0], rgb[1], rgb[2]);
+        return MkColorFromFloat(rgb[0], rgb[1], rgb[2]);
     }
     CrashIf(true);
     return 0;
-}
-
-static void UnpackRgbaFloat(COLORREF c, float& r, float& g, float& b, float& a) {
-    r = (float)(c & 0xff);
-    c = c >> 8;
-    r /= 255.0f;
-    g = (float)(c & 0xff);
-    g /= 255.0f;
-    c = c >> 8;
-    b = (float)(c & 0xff);
-    b /= 255.0f;
-    c = c >> 8;
-    a = (float)(c & 0xff);
-    a /= 255.0f;
-}
-
-// TODO: not sure if using 0xff for 'not set' for alpha
-int ToPdfRgba(COLORREF c, float col[4]) {
-    UnpackRgbaFloat(c, col[0], col[1], col[2], col[3]);
-    if (0xff == GetAlpha(c)) {
-        return 3;
-    }
-    return 4;
 }

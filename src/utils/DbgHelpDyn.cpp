@@ -104,20 +104,22 @@ static bool CanStackWalk() {
     return ok;
 }
 
-// check if has access to valid .pdb symbols file by trying to resolve a symbol
-__declspec(noinline) bool CanSymbolizeAddress(DWORD64 addr) {
-    static const int MAX_SYM_LEN = 512;
+constexpr int kMaxSymLen = 512;
 
-    char buf[sizeof(SYMBOL_INFO) + MAX_SYM_LEN * sizeof(char)];
+// check if has access to valid .pdb symbols file by trying to resolve a symbol
+NO_INLINE bool CanSymbolizeAddress(DWORD64 addr) {
+    char buf[sizeof(SYMBOL_INFO) + kMaxSymLen * sizeof(char)];
     SYMBOL_INFO* symInfo = (SYMBOL_INFO*)buf;
 
     memset(buf, 0, sizeof(buf));
     symInfo->SizeOfStruct = sizeof(SYMBOL_INFO);
-    symInfo->MaxNameLen = MAX_SYM_LEN;
+    symInfo->MaxNameLen = kMaxSymLen;
 
     DWORD64 symDisp = 0;
     BOOL ok = DynSymFromAddr(GetCurrentProcess(), addr, &symDisp, symInfo);
-    return ok && symInfo->Name[0];
+    int symLen = symInfo->NameLen;
+    char* name = symInfo->Name;
+    return ok && symLen > 4 && (name[0] != 0);
 }
 
 // a heuristic to test if we have symbols for our own binaries by testing if
@@ -172,7 +174,7 @@ bool Initialize(const WCHAR* symPathW, bool force) {
     return true;
 }
 
-static BOOL CALLBACK OpenMiniDumpCallback([[maybe_unused]] void* param, PMINIDUMP_CALLBACK_INPUT input,
+static BOOL CALLBACK OpenMiniDumpCallback(__unused void* param, PMINIDUMP_CALLBACK_INPUT input,
                                           PMINIDUMP_CALLBACK_OUTPUT output) {
     if (!input || !output) {
         return FALSE;
@@ -217,7 +219,10 @@ void WriteMiniDump(const WCHAR* crashDumpFilePath, MINIDUMP_EXCEPTION_INFORMATIO
     CloseHandle(hFile);
 }
 
-static bool GetAddrInfo(void* addr, char* moduleName, DWORD moduleLen, DWORD& sectionOut, DWORD_PTR& offsetOut) {
+// note: without NO_INLINE it would be mis-compiled to return false in release builds
+// making GetAddressInfo() not provide info about address
+NO_INLINE static bool GetAddrInfo(void* addr, char* moduleName, DWORD moduleLen, DWORD& sectionOut,
+                                  DWORD_PTR& offsetOut) {
     MEMORY_BASIC_INFORMATION mbi;
     if (0 == VirtualQuery(addr, &mbi, sizeof(mbi))) {
         return false;
@@ -244,7 +249,7 @@ static bool GetAddrInfo(void* addr, char* moduleName, DWORD moduleLen, DWORD& se
         if (section->SizeOfRawData > section->Misc.VirtualSize) {
             endAddr += section->SizeOfRawData;
         } else {
-            section->Misc.VirtualSize;
+            endAddr += section->Misc.VirtualSize;
         }
 
         if (lAddr >= startAddr && lAddr <= endAddr) {
@@ -282,9 +287,10 @@ void GetAddressInfo(str::Str& s, DWORD64 addr, bool compact) {
     char moduleName[MAX_PATH] = {0};
     DWORD section;
     DWORD_PTR offset;
-    if (GetAddrInfo((void*)addr, moduleName, sizeof(moduleName), section, offset)) {
+    ok = GetAddrInfo((void*)addr, moduleName, sizeof(moduleName), section, offset);
+    if (ok) {
         str::ToLowerInPlace(moduleName);
-        const char* moduleShort = path::GetBaseNameNoFree(moduleName);
+        const char* moduleShort = path::GetBaseNameTemp(moduleName);
         if (compact) {
             s.Append(moduleShort);
         } else {
@@ -413,7 +419,7 @@ void GetThreadCallstack(str::Str& s, DWORD threadId) {
 // from local buffer overrun because optimizations are disabled in function)"
 #pragma warning(push)
 #pragma warning(disable : 4748)
-__declspec(noinline) bool GetCurrentThreadCallstack(str::Str& s) {
+NO_INLINE bool GetCurrentThreadCallstack(str::Str& s) {
     // not available under Win2000
     if (!DynRtlCaptureContext) {
         return false;
@@ -488,6 +494,7 @@ void GetExceptionInfo(str::Str& s, EXCEPTION_POINTERS* excPointers) {
     if (!excPointers) {
         return;
     }
+
     EXCEPTION_RECORD* excRecord = excPointers->ExceptionRecord;
     DWORD excCode = excRecord->ExceptionCode;
     s.AppendFmt("Exception: %08X %s\r\n", (int)excCode, ExceptionNameFromCode(excCode));
@@ -520,10 +527,10 @@ void GetExceptionInfo(str::Str& s, EXCEPTION_POINTERS* excPointers) {
         "RAX:%016I64X  RBX:%016I64X  RCX:%016I64X\r\nRDX:%016I64X  RSI:%016I64X  RDI:%016I64X\r\n"
         "R8: %016I64X\r\nR9: "
         "%016I64X\r\nR10:%016I64X\r\nR11:%016I64X\r\nR12:%016I64X\r\nR13:%016I64X\r\nR14:%016I64X\r\nR15:%016I64X\r\n",
-        ctx->Rax, ctx->Rbx, ctx->Rcx, ctx->Rdx, ctx->Rsi, ctx->Rdi, ctx->R9, ctx->R10, ctx->R11, ctx->R12, ctx->R13,
-        ctx->R14, ctx->R15);
+        ctx->Rax, ctx->Rbx, ctx->Rcx, ctx->Rdx, ctx->Rsi, ctx->Rdi, ctx->R8, ctx->R9, ctx->R10, ctx->R11, ctx->R12,
+        ctx->R13, ctx->R14, ctx->R15);
     s.AppendFmt("CS:RIP:%04X:%016I64X\r\n", ctx->SegCs, ctx->Rip);
-    s.AppendFmt("SS:RSP:%04X:%016X  RBP:%08X\r\n", ctx->SegSs, ctx->Rsp, ctx->Rbp);
+    s.AppendFmt("SS:RSP:%04X:%016X  RBP:%08X\r\n", ctx->SegSs, (unsigned int)ctx->Rsp, (unsigned int)ctx->Rbp);
     s.AppendFmt("DS:%04X  ES:%04X  FS:%04X  GS:%04X\r\n", ctx->SegDs, ctx->SegEs, ctx->SegFs, ctx->SegGs);
     s.AppendFmt("Flags:%08X\r\n", ctx->EFlags);
 #else

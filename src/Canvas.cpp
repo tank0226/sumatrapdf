@@ -9,8 +9,8 @@
 #include "utils/Timer.h"
 #include "utils/UITask.h"
 #include "utils/WinUtil.h"
-#include "AppColors.h"
 #include "utils/ScopedWin.h"
+#include "utils/Log.h"
 
 #include "wingui/WinGui.h"
 #include "wingui/Layout.h"
@@ -19,6 +19,7 @@
 #include "wingui/TreeCtrl.h"
 #include "wingui/FrameRateWnd.h"
 
+#include "AppColors.h"
 #include "Annotation.h"
 #include "EngineBase.h"
 #include "EngineCreate.h"
@@ -227,16 +228,17 @@ static bool StopDraggingAnnotation(WindowInfo* win, int x, int y, bool aborted) 
     Point pt{x, y};
     int pageNo = dm->GetPageNoByPoint(pt);
     // we can only move annotation within the same page
-    if (pageNo == annot->PageNo()) {
+    if (pageNo == PageNo(annot)) {
         Rect rScreen{x, y, 1, 1};
         RectF r = dm->CvtFromScreen(rScreen, pageNo);
-        RectF ar = annot->Rect();
+        RectF ar = GetRect(annot);
         r.dx = ar.dx;
         r.dy = ar.dy;
         // dbglogf("prev rect: x=%.2f, y=%.2f, dx=%.2f, dy=%.2f\n", ar.x, ar.y, ar.dx, ar.dy);
         // dbglogf(" new rect: x=%.2f, y=%.2f, dx=%.2f, dy=%.2f\n", r.x, r.y, r.dx, r.dy);
-        annot->SetRect(r);
+        SetRect(annot, r);
         WindowInfoRerender(win);
+        ToolbarUpdateStateForWindow(win, true);
         StartEditAnnotations(win->currentTab, annot);
     } else {
         delete annot;
@@ -292,7 +294,7 @@ bool IsDrag(int x1, int x2, int y1, int y2) {
     return false;
 }
 
-static void OnMouseMove(WindowInfo* win, int x, int y, [[maybe_unused]] WPARAM flags) {
+static void OnMouseMove(WindowInfo* win, int x, int y, __unused WPARAM flags) {
     CrashIf(!win->AsFixed());
 
     if (win->presentation != PM_DISABLED) {
@@ -332,7 +334,7 @@ static void OnMouseMove(WindowInfo* win, int x, int y, [[maybe_unused]] WPARAM f
             if (GetCursor()) {
                 SetCursorCached(IDC_IBEAM);
             }
-        /* fall through */
+            [[fallthrough]];
         case MouseAction::Selecting:
             win->selectionRect.dx = x - win->selectionRect.x;
             win->selectionRect.dy = y - win->selectionRect.y;
@@ -404,7 +406,7 @@ static void SetObjectUnderMouse(WindowInfo* win, int x, int y) {
     if (annot) {
         win->annotationOnLastButtonDown = annot;
         CreateMovePatternLazy(win);
-        RectF r = annot->Rect();
+        RectF r = GetRect(annot);
         int pageNo = dm->GetPageNoByPoint(pt);
         Rect rScreen = dm->CvtToScreen(pageNo, r);
         win->annotationBeingMovedSize = {rScreen.dx, rScreen.dy};
@@ -455,7 +457,7 @@ static void OnMouseLeftButtonDown(WindowInfo* win, int x, int y, WPARAM key) {
     // - not having CopySelection permission forces dragging
     bool isShift = IsShiftPressed();
     bool isCtrl = IsCtrlPressed();
-    bool canCopy = HasPermission(Perm_CopySelection);
+    bool canCopy = HasPermission(Perm::CopySelection);
     bool isOverText = win->AsFixed()->IsOverText(pt);
     Annotation* annot = win->annotationOnLastButtonDown;
     if (annot || !canCopy || (isShift || !isOverText) && !isCtrl) {
@@ -593,7 +595,7 @@ static void OnMouseLeftButtonDblClk(WindowInfo* win, int x, int y, WPARAM key) {
     delete pageEl;
 }
 
-static void OnMouseMiddleButtonDown(WindowInfo* win, int x, int y, [[maybe_unused]] WPARAM key) {
+static void OnMouseMiddleButtonDown(WindowInfo* win, int x, int y, __unused WPARAM key) {
     // Handle message by recording placement then moving document as mouse moves.
 
     switch (win->mouseAction) {
@@ -707,8 +709,7 @@ static void PaintPageFrameAndShadow(HDC hdc, Rect& bounds, Rect& pageRect, bool 
     Rectangle(hdc, frame.x, frame.y, frame.x + frame.dx, frame.y + frame.dy);
 }
 #else
-static void PaintPageFrameAndShadow(HDC hdc, Rect& bounds, [[maybe_unused]] Rect& pageRect,
-                                    [[maybe_unused]] bool presentation) {
+static void PaintPageFrameAndShadow(HDC hdc, Rect& bounds, __unused Rect& pageRect, __unused bool presentation) {
     AutoDeletePen pen(CreatePen(PS_NULL, 0, 0));
     auto col = GetAppColor(AppColor::MainWindowBg);
     AutoDeleteBrush brush(CreateSolidBrush(col));
@@ -779,8 +780,8 @@ static void DebugShowLinks(DisplayModel* dm, HDC hdc) {
 static void GetGradientColor(COLORREF a, COLORREF b, float perc, TRIVERTEX* tv) {
     u8 ar, ag, ab;
     u8 br, bg, bb;
-    UnpackRgb(a, ar, ag, ab);
-    UnpackRgb(b, br, bg, bb);
+    UnpackColor(a, ar, ag, ab);
+    UnpackColor(b, br, bg, bb);
 
     tv->Red = (COLOR16)((ar + perc * (br - ar)) * 256);
     tv->Green = (COLOR16)((ag + perc * (bg - ag)) * 256);
@@ -810,17 +811,17 @@ static void DrawDocument(WindowInfo* win, HDC hdc, RECT* rcArea) {
         FillRect(hdc, rcArea, brush);
     } else {
         COLORREF colors[3];
-        colors[0] = gcols->at(0);
+        colors[0] = ParseColor(gcols->at(0), WIN_COL_WHITE);
         if (nGCols == 1) {
             colors[1] = colors[2] = colors[0];
         } else if (nGCols == 2) {
-            colors[2] = gcols->at(1);
+            colors[2] = ParseColor(gcols->at(1), WIN_COL_WHITE);
             colors[1] =
                 RGB((GetRed(colors[0]) + GetRed(colors[2])) / 2, (GetGreen(colors[0]) + GetGreen(colors[2])) / 2,
                     (GetBlue(colors[0]) + GetBlue(colors[2])) / 2);
         } else {
-            colors[1] = gcols->at(1);
-            colors[2] = gcols->at(2);
+            colors[1] = ParseColor(gcols->at(1), WIN_COL_WHITE);
+            colors[2] = ParseColor(gcols->at(2), WIN_COL_WHITE);
         }
         Size size = dm->GetCanvasSize();
         float percTop = 1.0f * dm->GetViewPort().y / size.dy;
@@ -993,7 +994,11 @@ static LRESULT OnSetCursorMouseIdle(WindowInfo* win, HWND hwnd) {
     }
     WCHAR* text = pageEl->GetValue();
     int pageNo = pageEl->GetPageNo();
+    const char* isValidPage = dm->ValidPageNo(pageNo) ? "yes" : "no";
     auto r = pageEl->GetRect();
+    // trying to debug bad page no in CvtToScreen()
+    auto textA = ToUtf8Temp(text);
+    logf("OnSetCursorMouseIdle: page element '%s' on page %d, valid pageNo: %s\n", textA.Get(), pageNo, isValidPage);
     Rect rc = dm->CvtToScreen(pageNo, r);
     win->ShowToolTip(text, rc, true);
 
@@ -1204,10 +1209,13 @@ static LRESULT OnGesture(WindowInfo* win, UINT msg, WPARAM wp, LPARAM lp) {
                 int deltaY = win->touchState.panPos.y - gi.ptsLocation.y;
                 win->touchState.panPos = gi.ptsLocation;
 
-                if ((!win->AsFixed() || !IsContinuous(win->AsFixed()->GetDisplayMode())) && (gi.dwFlags & GF_INERTIA) &&
-                    abs(deltaX) > abs(deltaY)) {
-                    // Switch pages once we hit inertia in a horizontal direction (only in
-                    // non-continuous modes, cf. https://github.com/sumatrapdfreader/sumatrapdf/issues/9 )
+                // on left / right flick, go to next / prev page
+                // unless this is PDF and horizontal scrollbar is visible,
+                // in which case we want to pan/scroll the document
+                bool isFlick = (gi.dwFlags & GF_INERTIA) && abs(deltaX) > abs(deltaY);
+                DisplayModel* dm = win->AsFixed();
+                bool enableFlick = !dm || !dm->NeedHScroll();
+                if (isFlick && enableFlick) {
                     if (deltaX < 0) {
                         win->ctrl->GoToPrevPage();
                     } else if (deltaX > 0) {
@@ -1215,12 +1223,12 @@ static LRESULT OnGesture(WindowInfo* win, UINT msg, WPARAM wp, LPARAM lp) {
                     }
                     // When we switch pages, go back to the initial scroll position
                     // and prevent further pan movement caused by the inertia
-                    if (win->AsFixed()) {
-                        win->AsFixed()->ScrollXTo(win->touchState.panScrollOrigX);
+                    if (dm) {
+                        dm->ScrollXTo(win->touchState.panScrollOrigX);
                     }
                     win->touchState.panStarted = false;
-                } else if (win->AsFixed()) {
-                    // Pan/Scroll
+                } else if (dm) {
+                    // pan / scroll
                     win->MoveDocBy(deltaX, deltaY);
                 }
             }
@@ -1332,7 +1340,21 @@ static LRESULT WndProcCanvasFixedPageUI(WindowInfo* win, HWND hwnd, UINT msg, WP
             return DefWindowProc(hwnd, msg, wp, lp);
 
         case WM_CONTEXTMENU:
-            OnWindowContextMenu(win, 0, 0);
+            if (x == -1 || y == -1) {
+                // if invoked with a keyboard (shift-F10) use current mouse position
+                Point pt;
+                GetCursorPosInHwnd(hwnd, pt);
+                x = pt.x;
+                y = pt.y;
+            }
+            // super defensive
+            if (x < 0) {
+                x = 0;
+            }
+            if (y < 0) {
+                y = 0;
+            }
+            OnWindowContextMenu(win, x, y);
             return 0;
 
         case WM_GESTURE:

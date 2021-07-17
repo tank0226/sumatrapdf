@@ -86,22 +86,13 @@ func build(dir, config, platform string) {
 	slnPath := filepath.Join("vs2019", "SumatraPDF.sln")
 
 	p := fmt.Sprintf(`/p:Configuration=%s;Platform=%s`, config, platform)
-	runExeLoggedMust(msbuildPath, slnPath, `/t:test_util`, p, `/m`)
+	runExeLoggedMust(msbuildPath, slnPath, `/t:test_util:Rebuild`, p, `/m`)
 	runTestUtilMust(dir)
 
-	runExeLoggedMust(msbuildPath, slnPath, `/t:SumatraPDF;SumatraPDF-dll;PdfFilter;PdfPreview`, p, `/m`)
+	runExeLoggedMust(msbuildPath, slnPath, `/t:SumatraPDF:Rebuild;SumatraPDF-dll:Rebuild;PdfFilter:Rebuild;PdfPreview:Rebuild`, p, `/m`)
 	signFilesMust(dir)
 	createPdbZipMust(dir)
 	createPdbLzsaMust(dir)
-}
-
-func buildJustInstaller(dir, config, platform string) {
-	msbuildPath := detectMsbuildPath()
-	slnPath := filepath.Join("vs2019", "SumatraPDF.sln")
-
-	p := fmt.Sprintf(`/p:Configuration=%s;Platform=%s`, config, platform)
-	runExeLoggedMust(msbuildPath, slnPath, `/t:SumatraPDF-dll;PdfFilter;PdfPreview`, p, `/m`)
-	signFilesMust(dir)
 }
 
 func extractSumatraVersionMust() string {
@@ -165,7 +156,7 @@ func clean() {
 			}
 		}
 	}
-	fmt.Printf("clean: skipped %d files, deleted %d dirs and %d files\n", nSkipped, nDirsDeleted, nFilesDeleted)
+	logf("clean: skipped %d files, deleted %d dirs and %d files\n", nSkipped, nDirsDeleted, nFilesDeleted)
 }
 
 func runTestUtilMust(dir string) {
@@ -182,10 +173,11 @@ func buildLzsa() {
 	clean()
 
 	msbuildPath := detectMsbuildPath()
-	runExeLoggedMust(msbuildPath, `vs2019\SumatraPDF.sln`, `/t:MakeLZSA`, `/p:Configuration=Release;Platform=Win32`, `/m`)
+	runExeLoggedMust(msbuildPath, `vs2019\MakeLZSA.sln`, `/t:MakeLZSA:Rebuild`, `/p:Configuration=Release;Platform=Win32`, `/m`)
 
 	path := filepath.Join("out", "rel32", "MakeLZSA.exe")
 	signMust(path)
+	logf("build and signed '%s'\n", path)
 }
 
 // smoke build is meant to be run locally to check that we can build everything
@@ -200,14 +192,16 @@ func smokeBuild() {
 	u.PanicIf(!u.FileExists(lzsa), "file '%s' doesn't exist", lzsa)
 
 	msbuildPath := detectMsbuildPath()
-	runExeLoggedMust(msbuildPath, `vs2019\SumatraPDF.sln`, `/t:SumatraPDF-dll;test_util`, `/p:Configuration=Release;Platform=x64`, `/m`)
-	runTestUtilMust(filepath.Join("out", "rel64"))
+	runExeLoggedMust(msbuildPath, `vs2019\SumatraPDF.sln`, `/t:SumatraPDF-dll:Rebuild;test_util:Rebuild`, `/p:Configuration=Release;Platform=x64`, `/m`)
+	outDir := filepath.Join("out", "rel64")
+	runTestUtilMust(outDir)
 
 	{
 		cmd := exec.Command(lzsa, "SumatraPDF.pdb.lzsa", "libmupdf.pdb:libmupdf.pdb", "SumatraPDF-dll.pdb:SumatraPDF-dll.pdb")
-		cmd.Dir = filepath.Join("out", "rel64")
+		cmd.Dir = outDir
 		u.RunCmdLoggedMust(cmd)
 	}
+	signFilesMust(outDir)
 }
 
 func buildConfigPath() string {
@@ -223,30 +217,18 @@ func getBuildConfigCommon() string {
 }
 
 // writes src/utils/BuildConfig.h to over-ride some of build settings
-func setBuildConfigDaily() {
-	s := getBuildConfigCommon()
-	// daily are also pre-release builds
-	preRelVer := getPreReleaseVer()
-	panicIf(preRelVer == "")
-	s += fmt.Sprintf("#define PRE_RELEASE_VER %s\n", preRelVer)
-	s += "#define IS_DAILY_BUILD 1\n"
-	err := ioutil.WriteFile(buildConfigPath(), []byte(s), 0644)
-	panicIfErr(err)
-}
-
 func setBuildConfigPreRelease() {
 	s := getBuildConfigCommon()
 	preRelVer := getPreReleaseVer()
 	s += fmt.Sprintf("#define PRE_RELEASE_VER %s\n", preRelVer)
-	err := ioutil.WriteFile(buildConfigPath(), []byte(s), 0644)
-	panicIfErr(err)
+	u.WriteFileMust(buildConfigPath(), []byte(s))
 }
 
 func setBuildConfigRelease() {
 	s := getBuildConfigCommon()
 	s += "#define SUMATRA_UPDATE_INFO_URL L\"https://www.sumatrapdfreader.org/update-check-rel.txt\"\n"
 	err := ioutil.WriteFile(buildConfigPath(), []byte(s), 0644)
-	panicIfErr(err)
+	must(err)
 }
 
 func revertBuildConfig() {
@@ -255,17 +237,17 @@ func revertBuildConfig() {
 
 func addZipFileWithNameMust(w *zip.Writer, path, nameInZip string) {
 	fi, err := os.Stat(path)
-	panicIfErr(err)
+	must(err)
 	fih, err := zip.FileInfoHeader(fi)
-	panicIfErr(err)
+	must(err)
 	fih.Name = nameInZip
 	fih.Method = zip.Deflate
 	d, err := ioutil.ReadFile(path)
-	panicIfErr(err)
+	must(err)
 	fw, err := w.CreateHeader(fih)
-	panicIfErr(err)
+	must(err)
 	_, err = fw.Write(d)
-	panicIfErr(err)
+	must(err)
 	// fw is just a io.Writer so we can't Close() it. It's not necessary as
 	// it's implicitly closed by the next Create(), CreateHeader()
 	// or Close() call on zip.Writer
@@ -280,13 +262,13 @@ func createExeZipWithGoWithNameMust(dir, nameInZip string) {
 	zipPath := filepath.Join(dir, "SumatraPDF.zip")
 	os.Remove(zipPath) // called multiple times during upload
 	f, err := os.Create(zipPath)
-	panicIfErr(err)
+	must(err)
 	defer f.Close()
 	zw := zip.NewWriter(f)
 	path := filepath.Join(dir, "SumatraPDF.exe")
 	addZipFileWithNameMust(zw, path, nameInZip)
 	err = zw.Close()
-	panicIfErr(err)
+	must(err)
 }
 
 func createExeZipWithPigz(dir string) {
@@ -305,7 +287,7 @@ func createExeZipWithPigz(dir string) {
 	removeFileMust(dstPath)
 
 	wd, err := os.Getwd()
-	panicIfErr(err)
+	must(err)
 	pigzExePath := filepath.Join(wd, "bin", "pigz.exe")
 	fatalIf(!u.FileExists(pigzExePath), "file '%s' doesn't exist\n", pigzExePath)
 	cmd := exec.Command(pigzExePath, "-11", "--keep", "--zip", srcFile)
@@ -317,13 +299,13 @@ func createExeZipWithPigz(dir string) {
 
 	fatalIf(!u.FileExists(dstPathTmp), "file '%s' doesn't exist\n", dstPathTmp)
 	err = os.Rename(dstPathTmp, dstPath)
-	panicIfErr(err)
+	must(err)
 }
 
 func createPdbZipMust(dir string) {
 	path := filepath.Join(dir, "SumatraPDF.pdb.zip")
 	f, err := os.Create(path)
-	panicIfErr(err)
+	must(err)
 	defer f.Close()
 	w := zip.NewWriter(f)
 
@@ -332,14 +314,14 @@ func createPdbZipMust(dir string) {
 	}
 
 	err = w.Close()
-	panicIfErr(err)
+	must(err)
 }
 
 func createPdbLzsaMust(dir string) {
 	args := []string{"SumatraPDF.pdb.lzsa"}
 	args = append(args, pdbFiles...)
 	curDir, err := os.Getwd()
-	panicIfErr(err)
+	must(err)
 	makeLzsaPath := filepath.Join(curDir, "bin", "MakeLZSA.exe")
 	cmd := exec.Command(makeLzsaPath, args...)
 	cmd.Dir = dir
@@ -361,7 +343,7 @@ func createManifestMust() {
 	}
 	dirs := []string{rel32Dir, rel64Dir}
 	// in daily build, there's no 32bit build
-	if !pathExists(rel32Dir) {
+	if !u.PathExists(rel32Dir) {
 		dirs = []string{rel64Dir}
 	}
 	for _, dir := range dirs {
@@ -374,7 +356,7 @@ func createManifestMust() {
 	}
 
 	s := strings.Join(lines, "\n")
-	u.CreateDirIfNotExistsMust(artifactsDir)
+	u.CreateDirMust(artifactsDir)
 	path := filepath.Join(artifactsDir, "manifest.txt")
 	u.WriteFileMust(path, []byte(s))
 }
@@ -385,7 +367,7 @@ func createManifestMust() {
 // https://docs.microsoft.com/en-us/windows/msix/desktop/desktop-to-uwp-packaging-dot-net
 func makeAppx() {
 	appExePath := detectMakeAppxPath()
-	fmt.Printf("makeAppx: '%s'\n", appExePath)
+	logf("makeAppx: '%s'\n", appExePath)
 }
 
 var (
@@ -405,6 +387,7 @@ var (
 func signFilesMust(dir string) {
 	if !shouldSignAndUpload() {
 		logf("Skipping signing in dir '%s'\n", dir)
+		return
 	}
 	if u.FileExists(filepath.Join(dir, "SumatraPDF.exe")) {
 		signMust(filepath.Join(dir, "SumatraPDF.exe"))
@@ -413,4 +396,177 @@ func signFilesMust(dir string) {
 	signMust(filepath.Join(dir, "PdfFilter.dll"))
 	signMust(filepath.Join(dir, "PdfPreview.dll"))
 	signMust(filepath.Join(dir, "SumatraPDF-dll.exe"))
+}
+
+func signFilesOptional(dir string) {
+	if !hasCertPwd() {
+		return
+	}
+	signFilesMust(dir)
+}
+
+func buildPreRelease() {
+	detectSigntoolPath() // early exit if missing
+
+	ver := getVerForBuildType(buildTypePreRel)
+	s := fmt.Sprintf("buidling pre-release version %s", ver)
+	defer makePrintDuration(s)()
+
+	verifyGitCleanMust()
+	// TODO: remove. We should built on non-master branches
+	//verifyOnMasterBranchMust()
+	verifyTranslationsMust()
+
+	clean()
+	setBuildConfigPreRelease()
+	defer revertBuildConfig()
+
+	build(rel32Dir, "Release", "Win32")
+	nameInZip := fmt.Sprintf("SumatraPDF-prerel-%s-32.exe", ver)
+	createExeZipWithGoWithNameMust(rel32Dir, nameInZip)
+
+	build(rel64Dir, "Release", "x64")
+	nameInZip = fmt.Sprintf("SumatraPDF-prerel-%s-64.exe", ver)
+	createExeZipWithGoWithNameMust(rel64Dir, nameInZip)
+
+	createManifestMust()
+
+	dstDir := filepath.Join("out", "final-prerel")
+	prefix := fmt.Sprintf("SumatraPDF-prerel-%s", ver)
+	copyBuiltFiles(dstDir, rel32Dir, prefix)
+	copyBuiltFiles(dstDir, rel64Dir, prefix+"-64")
+	copyBuiltManifest(dstDir, prefix)
+}
+
+func buildRelease(forUpload bool) {
+	detectSigntoolPath() // early exit if missing
+
+	ver := getVerForBuildType(buildTypeRel)
+	s := fmt.Sprintf("buidling release version %s", ver)
+	defer makePrintDuration(s)()
+
+	if forUpload {
+		verifyGitCleanMust()
+		verifyOnReleaseBranchMust()
+		verifyTranslationsMust()
+	}
+
+	verifyBuildNotInS3ShortMust(buildTypeRel)
+	verifyBuildNotInSpacesMust(buildTypeRel)
+
+	clean()
+	setBuildConfigRelease()
+	defer revertBuildConfig()
+
+	build(rel32Dir, "Release", "Win32")
+	nameInZip := fmt.Sprintf("SumatraPDF-%s-32.exe", ver)
+	createExeZipWithGoWithNameMust(rel32Dir, nameInZip)
+
+	build(rel64Dir, "Release", "x64")
+	nameInZip = fmt.Sprintf("SumatraPDF-%s-64.exe", ver)
+	createExeZipWithGoWithNameMust(rel64Dir, nameInZip)
+
+	createManifestMust()
+
+	dstDir := filepath.Join("out", "final-rel")
+	prefix := fmt.Sprintf("SumatraPDF-%s", ver)
+	copyBuiltFiles(dstDir, rel32Dir, prefix)
+	copyBuiltFiles(dstDir, rel64Dir, prefix+"-64")
+	copyBuiltManifest(dstDir, prefix)
+}
+
+func buildJustInstaller(dir, config, platform string) {
+	msbuildPath := detectMsbuildPath()
+	slnPath := filepath.Join("vs2019", "SumatraPDF.sln")
+
+	p := fmt.Sprintf(`/p:Configuration=%s;Platform=%s`, config, platform)
+	runExeLoggedMust(msbuildPath, slnPath, `/t:SumatraPDF-dll:Rebuild;PdfFilter:Rebuild;PdfPreview:Rebuild`, p, `/m`)
+	signFilesOptional(dir)
+}
+
+func buildJustPortableExe(dir, config, platform string) {
+	msbuildPath := detectMsbuildPath()
+	slnPath := filepath.Join("vs2019", "SumatraPDF.sln")
+
+	p := fmt.Sprintf(`/p:Configuration=%s;Platform=%s`, config, platform)
+	runExeLoggedMust(msbuildPath, slnPath, `/t:SumatraPDF`, p, `/m`)
+	signFilesOptional(dir)
+}
+
+func buildPortableExe64() {
+	buildJustPortableExe(rel64Dir, "Release", "x64")
+}
+
+func buildLogview() {
+	msbuildPath := detectMsbuildPath()
+	slnPath := filepath.Join("vs2019", "SumatraPDF.sln")
+
+	config := "Release"
+	platform := "x64"
+	p := fmt.Sprintf(`/p:Configuration=%s;Platform=%s`, config, platform)
+	runExeLoggedMust(msbuildPath, slnPath, `/t:logview:Rebuild`, p, `/m`)
+}
+
+func buildTestUtil() {
+	msbuildPath := detectMsbuildPath()
+	slnPath := filepath.Join("vs2019", "SumatraPDF.sln")
+
+	config := "Release"
+	platform := "x64"
+	p := fmt.Sprintf(`/p:Configuration=%s;Platform=%s`, config, platform)
+	runExeLoggedMust(msbuildPath, slnPath, `/t:test_util:Rebuild`, p, `/m`)
+}
+
+// a faster release build for testing that only does 64-bit installer
+func buildRelease64Fast() {
+	detectSigntoolPath() // early exit if missing
+
+	ver := getVerForBuildType(buildTypeRel)
+	s := fmt.Sprintf("buidling release version %s", ver)
+	defer makePrintDuration(s)()
+
+	if !isGitClean() {
+		logf("note: unsaved git changes\n")
+	}
+	//verifyOnReleaseBranchMust()
+
+	//verifyBuildNotInS3ShortMust(buildTypeRel)
+	//verifyBuildNotInSpacesMust(buildTypeRel)
+
+	clean()
+	setBuildConfigRelease()
+	defer revertBuildConfig()
+
+	buildJustInstaller(rel64Dir, "Release", "x64")
+
+	dstDir := filepath.Join("out", "final-rel-fast")
+	prefix := fmt.Sprintf("SumatraPDF-%s", ver)
+	copyBuiltFiles(dstDir, rel64Dir, prefix+"-64")
+}
+
+// a faster release build for testing that only does 32-bit installer
+func buildRelease32Fast() {
+	detectSigntoolPath() // early exit if missing
+
+	ver := getVerForBuildType(buildTypeRel)
+	s := fmt.Sprintf("buidling release version %s", ver)
+	defer makePrintDuration(s)()
+
+	if !isGitClean() {
+		logf("%s", "note: unsaved git changes\n")
+	}
+	//verifyOnReleaseBranchMust()
+
+	//verifyBuildNotInS3ShortMust(buildTypeRel)
+	//verifyBuildNotInSpacesMust(buildTypeRel)
+
+	clean()
+	setBuildConfigRelease()
+	defer revertBuildConfig()
+
+	buildJustInstaller(rel32Dir, "Release", "Win32")
+
+	dstDir := filepath.Join("out", "final-rel32-fast")
+	prefix := fmt.Sprintf("SumatraPDF-%s", ver)
+	copyBuiltFiles(dstDir, rel32Dir, prefix+"-32")
 }

@@ -15,7 +15,6 @@
 
 #include "wingui/TreeModel.h"
 
-#include "Annotation.h"
 #include "EngineBase.h"
 #include "EngineCreate.h"
 #include "DisplayMode.h"
@@ -49,7 +48,7 @@
 bool gIsStartup = false;
 WStrVec gDdeOpenOnStartup;
 
-NotificationGroupId NG_FIND_PROGRESS = "findProgress";
+Kind NG_FIND_PROGRESS = "findProgress";
 
 // don't show the Search UI for document types that don't
 // support extracting text and/or navigating to a specific
@@ -82,7 +81,7 @@ void OnMenuFind(WindowInfo* win) {
     DisplayModel* dm = win->AsFixed();
     if (dm->textSelection->result.len > 0 && Edit_GetTextLength(win->hwndFindBox) == 0) {
         AutoFreeWstr selection(dm->textSelection->ExtractText(L" "));
-        str::NormalizeWS(selection);
+        str::NormalizeWSInPlace(selection);
         if (!str::IsEmpty(selection.Get())) {
             win::SetText(win->hwndFindBox, selection);
             Edit_SetModify(win->hwndFindBox, TRUE);
@@ -162,7 +161,7 @@ void OnMenuFindSel(WindowInfo* win, TextSearchDirection direction) {
     }
 
     AutoFreeWstr selection(dm->textSelection->ExtractText(L" "));
-    str::NormalizeWS(selection);
+    str::NormalizeWSInPlace(selection);
     if (str::IsEmpty(selection.Get())) {
         return;
     }
@@ -412,12 +411,13 @@ void PaintForwardSearchMark(WindowInfo* win, HDC hdc) {
     }
 
     BYTE alpha = (BYTE)(0x5f * 1.0f * (HIDE_FWDSRCHMARK_STEPS - win->fwdSearchMark.hideStep) / HIDE_FWDSRCHMARK_STEPS);
-    PaintTransparentRectangles(hdc, win->canvasRc, rects, gGlobalPrefs->forwardSearch.highlightColor, alpha, 0);
+    ParsedColor* parsedCol = GetPrefsColor(gGlobalPrefs->forwardSearch.highlightColor);
+    PaintTransparentRectangles(hdc, win->canvasRc, rects, parsedCol->col, alpha, 0);
 }
 
 // returns true if the double-click was handled and false if it wasn't
 bool OnInverseSearch(WindowInfo* win, int x, int y) {
-    if (!HasPermission(Perm_DiskAccess) || gPluginMode) {
+    if (!HasPermission(Perm::DiskAccess) || gPluginMode) {
         return false;
     }
     TabInfo* tab = win->currentTab;
@@ -467,7 +467,7 @@ bool OnInverseSearch(WindowInfo* win, int x, int y) {
         // if the source file is missing, check if it's been moved to the same place as
         // the PDF document (which happens if all files are moved together)
         AutoFreeWstr altsrcpath(path::GetDir(tab->filePath));
-        altsrcpath.Set(path::Join(altsrcpath, path::GetBaseNameNoFree(srcfilepath)));
+        altsrcpath.Set(path::Join(altsrcpath, path::GetBaseNameTemp(srcfilepath)));
         if (!str::Eq(altsrcpath, srcfilepath) && file::Exists(altsrcpath)) {
             srcfilepath.Set(altsrcpath.StealData());
         }
@@ -507,8 +507,8 @@ bool OnInverseSearch(WindowInfo* win, int x, int y) {
 }
 
 // Show the result of a PDF forward-search synchronization (initiated by a DDE command)
-void ShowForwardSearchResult(WindowInfo* win, const WCHAR* fileName, uint line, [[maybe_unused]] uint col, uint ret,
-                             uint page, Vec<Rect>& rects) {
+void ShowForwardSearchResult(WindowInfo* win, const WCHAR* fileName, uint line, __unused uint col, uint ret, uint page,
+                             Vec<Rect>& rects) {
     CrashIf(!win->AsFixed());
     DisplayModel* dm = win->AsFixed();
     win->fwdSearchMark.rects.Reset();
@@ -749,7 +749,7 @@ static const WCHAR* HandleGotoCmd(const WCHAR* cmd, DDEACK& ack) {
 // [GoToPage("c:\file.pdf",37)]
 #define DDECOMMAND_PAGE L"GotoPage"
 
-static const WCHAR* HandlePageCmd([[maybe_unused]] HWND hwnd, const WCHAR* cmd, DDEACK& ack) {
+static const WCHAR* HandlePageCmd(__unused HWND hwnd, const WCHAR* cmd, DDEACK& ack) {
     AutoFreeWstr pdfFile;
     uint page = 0;
     const WCHAR* next = str::Parse(cmd, L"[GotoPage(\"%S\",%u)]", &pdfFile, &page);
@@ -811,7 +811,7 @@ static const WCHAR* HandleSetViewCmd(const WCHAR* cmd, DDEACK& ack) {
         }
     }
 
-    AutoFreeStr viewModeWstr = strconv::WstrToUtf8(viewMode);
+    auto viewModeWstr = ToUtf8Temp(viewMode);
     DisplayMode mode = DisplayModeFromString(viewModeWstr.Get(), DisplayMode::Automatic);
     if (mode != DisplayMode::Automatic) {
         SwitchToDisplayMode(win, mode);
@@ -834,16 +834,12 @@ static const WCHAR* HandleSetViewCmd(const WCHAR* cmd, DDEACK& ack) {
 }
 
 static void HandleDdeCmds(HWND hwnd, const WCHAR* cmd, DDEACK& ack) {
-    if (str::IsEmpty(cmd)) {
-        return;
-    }
-
-    {
-        AutoFree tmp = strconv::WstrToUtf8(cmd);
-        logf("HandleDdeCmds: '%s'\n", tmp.Get());
-    }
-
     while (!str::IsEmpty(cmd)) {
+        {
+            auto tmp = ToUtf8Temp(cmd);
+            logf("HandleDdeCmds: '%s'\n", tmp.Get());
+        }
+
         const WCHAR* nextCmd = HandleSyncCmd(cmd, ack);
         if (!nextCmd) {
             nextCmd = HandleOpenCmd(cmd, ack);
@@ -862,11 +858,6 @@ static void HandleDdeCmds(HWND hwnd, const WCHAR* cmd, DDEACK& ack) {
             nextCmd = str::Parse(cmd, L"%S]", &tmp);
         }
         cmd = nextCmd;
-
-        {
-            AutoFree tmp = strconv::WstrToUtf8(cmd);
-            logf("HandleDdeCmds: cmd='%s'\n", tmp.Get());
-        }
     }
 }
 
@@ -896,13 +887,13 @@ LRESULT OnDDExecute(HWND hwnd, WPARAM wp, LPARAM lp) {
     return 0;
 }
 
-LRESULT OnDDETerminate(HWND hwnd, WPARAM wp, [[maybe_unused]] LPARAM lp) {
+LRESULT OnDDETerminate(HWND hwnd, WPARAM wp, __unused LPARAM lp) {
     // Respond with another WM_DDE_TERMINATE message
     PostMessageW((HWND)wp, WM_DDE_TERMINATE, (WPARAM)hwnd, 0L);
     return 0;
 }
 
-LRESULT OnCopyData([[maybe_unused]] HWND hwnd, WPARAM wp, LPARAM lp) {
+LRESULT OnCopyData(__unused HWND hwnd, WPARAM wp, LPARAM lp) {
     COPYDATASTRUCT* cds = (COPYDATASTRUCT*)lp;
     if (!cds || cds->dwData != 0x44646557 /* DdeW */ || wp) {
         return FALSE;

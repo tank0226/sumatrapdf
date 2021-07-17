@@ -17,7 +17,6 @@
 #include "wingui/TreeCtrl.h"
 #include "wingui/TabsCtrl.h"
 
-#include "Annotation.h"
 #include "EngineBase.h"
 #include "EngineCreate.h"
 #include "DisplayMode.h"
@@ -347,10 +346,15 @@ int TabPainter::Count() {
 }
 
 static void SetTabTitle(TabInfo* tab) {
+    if (!tab) {
+        return;
+    }
     WindowInfo* win = tab->win;
     int idx = win->tabs.Find(tab);
     WCHAR* title = (WCHAR*)tab->GetTabTitle();
     win->tabsCtrl->SetTabText(idx, title);
+    auto tooltip = tab->filePath.AsView();
+    win->tabsCtrl->SetTooltip(idx, tooltip);
 }
 
 static void NO_INLINE SwapTabs(WindowInfo* win, int tab1, int tab2) {
@@ -397,8 +401,8 @@ static void TabNotification(WindowInfo* win, UINT code, int idx1, int idx2) {
     }
 }
 
-static LRESULT CALLBACK TabBarParentProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
-                                         [[maybe_unused]] UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
+static LRESULT CALLBACK TabBarParentProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, __unused UINT_PTR uIdSubclass,
+                                         DWORD_PTR dwRefData) {
     if (msg == WM_NOTIFY && wp == IDC_TABBAR) {
         WindowInfo* win = (WindowInfo*)dwRefData;
         if (win) {
@@ -409,8 +413,8 @@ static LRESULT CALLBACK TabBarParentProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
     return DefSubclassProc(hwnd, msg, wp, lp);
 }
 
-static LRESULT CALLBACK TabBarProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, [[maybe_unused]] UINT_PTR uIdSubclass,
-                                   [[maybe_unused]] DWORD_PTR dwRefData) {
+static LRESULT CALLBACK TabBarProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, __unused UINT_PTR uIdSubclass,
+                                   __unused DWORD_PTR dwRefData) {
     PAINTSTRUCT ps;
     HDC hdc;
     int index;
@@ -524,9 +528,11 @@ static LRESULT CALLBACK TabBarProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, [[
 
             bool inX = false;
             int hl = wp == 0xFF ? -1 : tab->IndexFromPoint(GET_X_LPARAM(lp), GET_Y_LPARAM(lp), &inX);
+            bool didChangeTabs = false;
             if (tab->isDragging && hl == -1) {
                 // preserve the highlighted tab if it's dragged outside the tabs' area
                 hl = tab->highlighted;
+                didChangeTabs = true;
             }
             if (tab->highlighted != hl) {
                 if (tab->isDragging) {
@@ -539,6 +545,7 @@ static LRESULT CALLBACK TabBarProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, [[
                 tab->Invalidate(hl);
                 tab->Invalidate(tab->highlighted);
                 tab->highlighted = hl;
+                didChangeTabs = true;
             }
             int xHl = inX && !tab->isDragging ? hl : -1;
             if (tab->xHighlighted != xHl) {
@@ -548,6 +555,11 @@ static LRESULT CALLBACK TabBarProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, [[
             }
             if (!inX) {
                 tab->xClicked = -1;
+            }
+            if (didChangeTabs && tab->highlighted >= 0) {
+                int idx = tab->highlighted;
+                auto tabsCtrl = tab->tabsCtrl;
+                tabsCtrl->MaybeUpdateTooltipText(idx);
             }
         }
             return 0;
@@ -642,6 +654,7 @@ static LRESULT CALLBACK TabBarProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, [[
 void CreateTabbar(WindowInfo* win) {
     TabsCtrl2* tabsCtrl = new TabsCtrl2(win->hwndFrame);
     tabsCtrl->ctrlID = IDC_TABBAR;
+    tabsCtrl->createToolTipsHwnd = true;
     tabsCtrl->Create();
 
     HWND hwndTabBar = tabsCtrl->hwnd;
@@ -661,7 +674,7 @@ void CreateTabbar(WindowInfo* win) {
 static NO_INLINE void VerifyTabInfo(WindowInfo* win, TabInfo* tdata) {
     CrashIf(!tdata || !win || tdata->ctrl != win->ctrl);
     AutoFreeWstr winTitle(win::GetText(win->hwndFrame));
-    SubmitCrashIf(!str::Eq(winTitle.Get(), tdata->frameTitle));
+    SubmitBugReportIf(!str::Eq(winTitle.Get(), tdata->frameTitle));
     bool expectedTocVisibility = tdata->showToc; // if not in presentation mode
     if (PM_DISABLED != win->presentation) {
         expectedTocVisibility = false; // PM_BLACK_SCREEN, PM_WHITE_SCREEN
@@ -669,8 +682,8 @@ static NO_INLINE void VerifyTabInfo(WindowInfo* win, TabInfo* tdata) {
             expectedTocVisibility = tdata->showTocPresentation;
         }
     }
-    SubmitCrashIf(win->tocVisible != expectedTocVisibility);
-    SubmitCrashIf(tdata->canvasRc != win->canvasRc);
+    SubmitBugReportIf(win->tocVisible != expectedTocVisibility);
+    SubmitBugReportIf(tdata->canvasRc != win->canvasRc);
 }
 
 // Must be called when the active tab is losing selection.
@@ -762,14 +775,16 @@ void TabsOnCloseDoc(WindowInfo* win) {
         return;
     }
 
+    /*
     DisplayModel* dm = win->AsFixed();
     if (dm) {
         EngineBase* engine = dm->GetEngine();
         if (EngineHasUnsavedAnnotations(engine)) {
-            // TODO: warn about unsaved changed
-            logf("File has unsaved changed\n");
+            // TODO: warn about unsaved annotations
+            logf("File has unsaved annotations\n");
         }
     }
+    */
 
     int current = win->tabsCtrl->GetSelectedTabIndex();
     RemoveTab(win, current);
@@ -824,6 +839,10 @@ LRESULT TabsOnNotify(WindowInfo* win, LPARAM lp, int tab1, int tab2) {
         case T_DRAG:
             SwapTabs(win, tab1, tab2);
             break;
+        case TTN_GETDISPINFOA:
+        case TTN_GETDISPINFOW:
+            logf("TabsOnNotify TTN_GETDISPINFO\n");
+            break;
     }
     return TRUE;
 }
@@ -851,6 +870,7 @@ void UpdateTabWidth(WindowInfo* win) {
     auto maxDx = (rect.dx - 3) / count;
     tabSize.dx = std::min(tabSize.dx, maxDx);
     win->tabsCtrl->SetItemSize(tabSize);
+    win->tabsCtrl->MaybeUpdateTooltip();
 }
 
 void SetTabsInTitlebar(WindowInfo* win, bool inTitlebar) {
@@ -889,7 +909,7 @@ void TabsSelect(WindowInfo* win, int tabIndex) {
         return;
     }
     win->currentTab = win->tabs.at(tabIndex);
-    AutoFree path = strconv::WstrToUtf8(win->currentTab->filePath);
+    auto path = ToUtf8Temp(win->currentTab->filePath);
     dbglogf("TabsSelect: tabIndex: %d, new win->currentTab: 0x%p, path: '%s'\n", tabIndex, win->currentTab, path.Get());
     int prevIdx = win->tabsCtrl->SetSelectedTabByIndex(tabIndex);
     if (prevIdx != -1) {

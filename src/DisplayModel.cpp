@@ -50,7 +50,6 @@
 
 #include "wingui/TreeModel.h"
 
-#include "Annotation.h"
 #include "EngineBase.h"
 #include "EngineCreate.h"
 
@@ -72,19 +71,6 @@ static int ColumnsFromDisplayMode(DisplayMode displayMode) {
         return 2;
     }
     return 1;
-}
-
-int NormalizeRotation(int rotation) {
-    CrashIf((rotation % 90) != 0);
-    rotation = rotation % 360;
-    if (rotation < 0) {
-        rotation += 360;
-    }
-    if (rotation < 0 || rotation >= 360 || (rotation % 90) != 0) {
-        CrashIf(true);
-        return 0;
-    }
-    return rotation;
 }
 
 ScrollState::ScrollState(int page, double x, double y) : page(page), x(x), y(y) {
@@ -220,21 +206,21 @@ bool DisplayModel::GetPresentationMode() const {
     return presentationMode;
 }
 
-void DisplayModel::GetDisplayState(DisplayState* ds) {
+void DisplayModel::GetDisplayState(FileState* ds) {
     if (!ds->filePath || !str::EqI(ds->filePath, engine->FileName())) {
-        str::ReplacePtr(&ds->filePath, engine->FileName());
+        str::ReplaceWithCopy(&ds->filePath, engine->FileName());
     }
 
     ds->useDefaultState = !gGlobalPrefs->rememberStatePerDocument;
 
-    str::ReplacePtr(&ds->displayMode, DisplayModeToString(presentationMode ? presDisplayMode : GetDisplayMode()));
+    str::ReplaceWithCopy(&ds->displayMode, DisplayModeToString(presentationMode ? presDisplayMode : GetDisplayMode()));
     ZoomToString(&ds->zoom, presentationMode ? presZoomVirtual : zoomVirtual, ds);
 
     ScrollState ss = GetScrollState();
     ds->pageNo = ss.page;
-    ds->scrollPos = Point();
+    ds->scrollPos = PointF();
     if (!presentationMode) {
-        ds->scrollPos = Point((int)ss.x, (int)ss.y);
+        ds->scrollPos = PointF((float)ss.x, (float)ss.y);
     }
     ds->rotation = rotation;
     ds->displayR2L = displayR2L;
@@ -590,12 +576,13 @@ int DisplayModel::CurrentPageNo() const {
 void DisplayModel::CalcZoomReal(float newZoomVirtual) {
     CrashIf(!IsValidZoom(newZoomVirtual));
     zoomVirtual = newZoomVirtual;
+    int nPages = PageCount();
     if ((ZOOM_FIT_WIDTH == newZoomVirtual) || (ZOOM_FIT_PAGE == newZoomVirtual)) {
         /* we want the same zoom for all pages, so use the smallest zoom
            across the pages so that the largest page fits. In most documents
            all pages are the same size anyway */
         float minZoom = (float)HUGE_VAL;
-        for (int pageNo = 1; pageNo <= PageCount(); pageNo++) {
+        for (int pageNo = 1; pageNo <= nPages; pageNo++) {
             if (PageShown(pageNo)) {
                 float zoom = ZoomRealFromVirtualForPage(newZoomVirtual, pageNo);
                 PageInfo* pageInfo = GetPageInfo(pageNo);
@@ -618,13 +605,13 @@ void DisplayModel::CalcZoomReal(float newZoomVirtual) {
             zoomReal < ZoomRealFromVirtualForPage(ZOOM_FIT_PAGE, CurrentPageNo())) {
             zoomReal = newZoom;
         }
-        for (int pageNo = 1; pageNo <= PageCount(); pageNo++) {
+        for (int pageNo = 1; pageNo <= nPages; pageNo++) {
             PageInfo* pageInfo = GetPageInfo(pageNo);
             pageInfo->zoomReal = zoomReal;
         }
     } else {
         zoomReal = zoomVirtual * 0.01f * dpiFactor;
-        for (int pageNo = 1; pageNo <= PageCount(); pageNo++) {
+        for (int pageNo = 1; pageNo <= nPages; pageNo++) {
             PageInfo* pageInfo = GetPageInfo(pageNo);
             pageInfo->zoomReal = zoomReal;
         }
@@ -956,18 +943,48 @@ int DisplayModel::GetPageNextToPoint(Point pt) {
     return closest;
 }
 
+// TODO: try to track down why sometimes zoom on a page is 0
+// like https://github.com/sumatrapdfreader/sumatrapdf/issues/2014
+static float getZoomSafe(DisplayModel* dm, int pageNo, const PageInfo* pageInfo) {
+    float zoom = pageInfo->zoomReal;
+    if (zoom > 0) {
+        return zoom;
+    }
+    char* name = str::Dup("");
+    const WCHAR* nameW = dm->FilePath();
+    if (nameW) {
+        name = strconv::WstrToUtf8(nameW);
+    }
+    logf(
+        "getZoomSafe: invalid zoom, doc: %s, pageNo: %d, pageInfo->zoomReal: %.2f, dm->zoomReal: %.2f, "
+        "dm->zoomVirtual: %.2f\n",
+        name, pageNo, zoom, pageInfo->zoomReal, dm->zoomReal, dm->zoomVirtual);
+    free(name);
+    DebugCrashIf(true);
+    SubmitDebugReport("getZoomSafe(): zoom = 0");
+
+    if (dm->zoomReal > 0) {
+        return dm->zoomReal;
+    }
+
+    if (dm->zoomVirtual > 0) {
+        return dm->zoomVirtual;
+    }
+    // hail mary, return 100%
+    return 1.f;
+}
+
 Point DisplayModel::CvtToScreen(int pageNo, PointF pt) {
     PageInfo* pageInfo = GetPageInfo(pageNo);
-    SubmitCrashIf(!pageInfo);
     if (!pageInfo) {
+        const char* isValid = ValidPageNo(pageNo) ? "yes" : "no";
+        logf("DisplayModel::CvtToScreen: GetPageInfo(%d) failed, is valid page: %s\n", pageNo, isValid);
+        SubmitBugReportIf(!pageInfo);
         return Point();
     }
 
-    float zoom = pageInfo->zoomReal;
-    // TODO: must be a better way
-    if (zoom == 0) {
-        zoom = zoomReal;
-    }
+    float zoom = getZoomSafe(this, pageNo, pageInfo);
+
     PointF p = engine->Transform(pt, pageNo, zoom, rotation);
     // don't add the full 0.5 for rounding to account for precision errors
     Rect r = pageInfo->pageOnScreen;
@@ -997,11 +1014,8 @@ PointF DisplayModel::CvtFromScreen(Point pt, int pageNo) {
     // don't add the full 0.5 for rounding to account for precision errors
     Rect r = pageInfo->pageOnScreen;
     PointF p = PointF(pt.x - 0.499 - r.x, pt.y - 0.499 - r.y);
-    float zoom = pageInfo->zoomReal;
-    // TODO: must be a better way
-    if (zoom == 0) {
-        zoom = zoomReal;
-    }
+
+    float zoom = getZoomSafe(this, pageNo, pageInfo);
     return engine->Transform(p, pageNo, zoom, rotation, true);
 }
 
@@ -1031,6 +1045,7 @@ IPageElement* DisplayModel::GetElementAtPos(Point pt) {
     return engine->GetElementAtPos(pageNo, pos);
 }
 
+// caller must delete
 Annotation* DisplayModel::GetAnnotationAtPos(Point pt, AnnotationType* allowedAnnots) {
     int pageNo = GetPageNoByPoint(pt);
     if (!ValidPageNo(pageNo)) {
@@ -1171,7 +1186,7 @@ Point DisplayModel::GetContentStart(int pageNo) {
 void DisplayModel::GoToPage(int pageNo, int scrollY, bool addNavPt, int scrollX) {
     if (!ValidPageNo(pageNo)) {
         logf("DisplayModel::GoToPage: invalid pageNo: %d, nPages: %d\n", pageNo, engine->PageCount());
-        SubmitCrashIf(ValidPageNo(pageNo));
+        SubmitBugReportIf(ValidPageNo(pageNo));
         return;
     }
 

@@ -12,7 +12,6 @@ extern "C" {
 
 #include "wingui/TreeModel.h"
 
-#include "Annotation.h"
 #include "EngineBase.h"
 #include "EngineFzUtil.h"
 
@@ -141,6 +140,7 @@ static const char* gIconRotateRight =
   <circle cx="11" cy="19.94" r="0.15"/>
 </svg>)";
 
+// must match order in enum class TbIcon
 // clang-format off
 static const char* gAllIcons[] = {
     gIconFileOpen,

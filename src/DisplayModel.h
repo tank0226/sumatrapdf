@@ -4,6 +4,9 @@
 // define the following if you want shadows drawn around the pages
 // #define DRAW_PAGE_SHADOWS
 
+struct Annotation;
+enum class AnnotationType;
+
 /* Describes many attributes of one page in one, convenient place */
 struct PageInfo {
     /* data that is constant for a given page. page size in document units */
@@ -91,7 +94,7 @@ struct DisplayModel : public Controller {
     void ScrollToLink(PageDestination* dest) override;
     PageDestination* GetNamedDest(const WCHAR* name) override;
 
-    void GetDisplayState(DisplayState* ds) override;
+    void GetDisplayState(FileState* ds) override;
     // asynchronously calls saveThumbnail (fails silently)
     void CreateThumbnail(Size size, const onBitmapRenderedCb& saveThumbnail) override;
 
@@ -246,5 +249,3 @@ struct DisplayModel : public Controller {
        resp. number of Back history entries */
     size_t navHistoryIdx{0};
 };
-
-int NormalizeRotation(int rotation);

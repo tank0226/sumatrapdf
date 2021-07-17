@@ -32,7 +32,6 @@
 #include "wingui/TreeModel.h"
 
 #include "Accelerators.h"
-#include "Annotation.h"
 #include "EngineBase.h"
 #include "EngineCreate.h"
 #include "DisplayMode.h"
@@ -50,6 +49,7 @@
 #include "SumatraPDF.h"
 #include "WindowInfo.h"
 #include "TabInfo.h"
+#include "AutoUpdate.h"
 #include "resource.h"
 #include "Commands.h"
 #include "Flags.h"
@@ -97,14 +97,14 @@ class FileExistenceChecker : public ThreadBase {
 static FileExistenceChecker* gFileExistenceChecker = nullptr;
 
 void FileExistenceChecker::GetFilePathsToCheck() {
-    DisplayState* state;
+    FileState* state;
     for (size_t i = 0; i < 2 * FILE_HISTORY_MAX_RECENT && (state = gFileHistory.Get(i)) != nullptr; i++) {
         if (!state->isMissing) {
             paths.Append(str::Dup(state->filePath));
         }
     }
     // add missing paths from the list of most frequently opened documents
-    Vec<DisplayState*> frequencyList;
+    Vec<FileState*> frequencyList;
     gFileHistory.GetFrequencyOrder(frequencyList);
     size_t iMax = std::min<size_t>(2 * FILE_HISTORY_MAX_FREQUENT, frequencyList.size());
     for (size_t i = 0; i < iMax; i++) {
@@ -227,7 +227,7 @@ static void OpenUsingDde(HWND targetWnd, const WCHAR* filePath, Flags& i, bool i
          i.startScroll.x != -1 && i.startScroll.y != -1) &&
         isFirstWin) {
         const char* viewModeStr = DisplayModeToString(i.startView);
-        AutoFreeWstr viewMode = strconv::Utf8ToWstr(viewModeStr);
+        auto viewMode = ToWstrTemp(viewModeStr);
         cmd.AppendFmt(L"[SetView(\"%s\", \"%s\", %.2f, %d, %d)]", fullpath, viewMode.Get(), i.startZoom,
                       i.startScroll.x, i.startScroll.y);
     }
@@ -350,10 +350,10 @@ static bool SetupPluginMode(Flags& i) {
     }
 
     // don't save preferences for plugin windows (and don't allow fullscreen mode)
-    // TODO: Perm_DiskAccess is required for saving viewed files and printing and
-    //       Perm_InternetAccess is required for crash reports
+    // TODO: Perm::DiskAccess is required for saving viewed files and printing and
+    //       Perm::InternetAccess is required for crash reports
     // (they can still be disabled through sumatrapdfrestrict.ini or -restrict)
-    RestrictPolicies(Perm_SavePreferences | Perm_FullscreenAccess);
+    RestrictPolicies(Perm::SavePreferences | Perm::FullscreenAccess);
 
     i.reuseDdeInstance = i.exitWhenDone = false;
     gGlobalPrefs->reuseInstance = false;
@@ -380,7 +380,7 @@ static bool SetupPluginMode(Flags& i) {
     // see http://www.adobe.com/devnet/acrobat/pdfs/pdf_open_parameters.pdf#nameddest=G4.1501531
     if (i.pluginURL && str::FindChar(i.pluginURL, '#')) {
         AutoFreeWstr args(str::Dup(str::FindChar(i.pluginURL, '#') + 1));
-        str::TransChars(args, L"#", L"&");
+        str::TransCharsInPlace(args, L"#", L"&");
         WStrVec parts;
         parts.Split(args, L"&", true);
         for (size_t k = 0; k < parts.size(); k++) {
@@ -466,13 +466,10 @@ Error:
     goto Retry;
 }
 
-// TODO(port)
-// extern "C" void fz_redirect_dll_io_to_console();
-
 // Registering happens either through the Installer or the Options dialog;
 // here we just make sure that we're still registered
 static bool RegisterForPdfExtentions(HWND hwnd) {
-    if (IsRunningInPortableMode() || !HasPermission(Perm_RegistryAccess) || gPluginMode) {
+    if (IsRunningInPortableMode() || !HasPermission(Perm::RegistryAccess) || gPluginMode) {
         return false;
     }
 
@@ -484,10 +481,10 @@ static bool RegisterForPdfExtentions(HWND hwnd) {
        see this dialog */
     if (!gGlobalPrefs->associateSilently) {
         INT_PTR result = Dialog_PdfAssociate(hwnd, &gGlobalPrefs->associateSilently);
-        str::ReplacePtr(&gGlobalPrefs->associatedExtensions, IDYES == result ? L".pdf" : nullptr);
+        str::ReplaceWithCopy(&gGlobalPrefs->associatedExtensions, IDYES == result ? ".pdf" : nullptr);
     }
     // for now, .pdf is the only choice
-    if (!str::EqI(gGlobalPrefs->associatedExtensions, L".pdf")) {
+    if (!str::EqI(gGlobalPrefs->associatedExtensions, ".pdf")) {
         return false;
     }
 
@@ -518,23 +515,33 @@ static int RunMessageLoop() {
         }
         TranslateMessage(&msg);
         DispatchMessage(&msg);
+        ResetTempAllocator();
     }
 
     return (int)msg.wParam;
 }
 
+#if defined(DEBUG)
 static void ShutdownCommon() {
     mui::Destroy();
     uitask::Destroy();
     UninstallCrashHandler();
     dbghelp::FreeCallstackLogs();
-    // output leaks after all destructors of static objects have run
-    _CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);
+}
+#endif
+
+static void ReplaceColor(char** col, WCHAR* maybeColor) {
+    ParsedColor c;
+    ParseColor(c, ToUtf8Temp(maybeColor).Get());
+    if (c.parsedOk) {
+        char* colNewStr = SerializeColor(c.col);
+        str::ReplacePtr(&gGlobalPrefs->mainWindowBackground, colNewStr);
+    }
 }
 
 static void UpdateGlobalPrefs(const Flags& i) {
     if (i.inverseSearchCmdLine) {
-        str::ReplacePtr(&gGlobalPrefs->inverseSearchCmdLine, i.inverseSearchCmdLine);
+        str::ReplaceWithCopy(&gGlobalPrefs->inverseSearchCmdLine, i.inverseSearchCmdLine);
         gGlobalPrefs->enableTeXEnhancements = true;
     }
     gGlobalPrefs->fixedPageUI.invertColors = i.invertColors;
@@ -545,10 +552,10 @@ static void UpdateGlobalPrefs(const Flags& i) {
         } else if (str::EqI(i.globalPrefArgs.at(n), L"-bgcolor") || str::EqI(i.globalPrefArgs.at(n), L"-bg-color")) {
             // -bgcolor is for backwards compat (was used pre-1.3)
             // -bg-color is for consistency
-            ParseColor(&gGlobalPrefs->mainWindowBackground, i.globalPrefArgs.at(++n));
+            ReplaceColor(&gGlobalPrefs->mainWindowBackground, i.globalPrefArgs.at(++n));
         } else if (str::EqI(i.globalPrefArgs.at(n), L"-set-color-range")) {
-            ParseColor(&gGlobalPrefs->fixedPageUI.textColor, i.globalPrefArgs.at(++n));
-            ParseColor(&gGlobalPrefs->fixedPageUI.backgroundColor, i.globalPrefArgs.at(++n));
+            ReplaceColor(&gGlobalPrefs->fixedPageUI.textColor, i.globalPrefArgs.at(++n));
+            ReplaceColor(&gGlobalPrefs->fixedPageUI.backgroundColor, i.globalPrefArgs.at(++n));
         } else if (str::EqI(i.globalPrefArgs.at(n), L"-fwdsearch-offset")) {
             gGlobalPrefs->forwardSearch.highlightOffset = _wtoi(i.globalPrefArgs.at(++n));
             gGlobalPrefs->enableTeXEnhancements = true;
@@ -556,7 +563,7 @@ static void UpdateGlobalPrefs(const Flags& i) {
             gGlobalPrefs->forwardSearch.highlightWidth = _wtoi(i.globalPrefArgs.at(++n));
             gGlobalPrefs->enableTeXEnhancements = true;
         } else if (str::EqI(i.globalPrefArgs.at(n), L"-fwdsearch-color")) {
-            ParseColor(&gGlobalPrefs->forwardSearch.highlightColor, i.globalPrefArgs.at(++n));
+            ReplaceColor(&gGlobalPrefs->forwardSearch.highlightColor, i.globalPrefArgs.at(++n));
             gGlobalPrefs->enableTeXEnhancements = true;
         } else if (str::EqI(i.globalPrefArgs.at(n), L"-fwdsearch-permanent")) {
             gGlobalPrefs->forwardSearch.highlightPermanent = _wtoi(i.globalPrefArgs.at(++n));
@@ -568,17 +575,11 @@ static void UpdateGlobalPrefs(const Flags& i) {
     }
 }
 
-static bool ExeHasNameOfRaMicro() {
-    AutoFreeWstr exePath = GetExePath();
-    const WCHAR* exeName = path::GetBaseNameNoFree(exePath);
-    return str::FindI(exeName, L"ramicro");
-}
-
 // we're in installer mode if the name of the executable
 // has "install" string in it e.g. SumatraPDF-installer.exe
 static bool ExeHasNameOfInstaller() {
     AutoFreeWstr exePath = GetExePath();
-    const WCHAR* exeName = path::GetBaseNameNoFree(exePath);
+    const WCHAR* exeName = path::GetBaseNameTemp(exePath);
     if (str::FindI(exeName, L"uninstall")) {
         return false;
     }
@@ -597,26 +598,20 @@ static bool IsInstallerAndNamedAsSuch() {
     return ExeHasNameOfInstaller();
 }
 
-// if we can load "libmupdf.dll" this is likely an installed executable
-static bool SeemsInstalled() {
-    HMODULE h = LoadLibraryW(L"libmupdf.dll");
-    // technically this is leaking but we don't care
-    // because libmupdf.dll must be loaded anyway
-    // cppcheck-suppress resourceLeak
-    return h != nullptr;
+static bool IsOurExeInstalled() {
+    AutoFreeWstr installedDir = GetExistingInstallationDir();
+    if (!installedDir.Get()) {
+        return false;
+    }
+    AutoFreeWstr exeDir = GetExeDir();
+    return str::EqI(installedDir.Get(), exeDir.Get());
 }
 
 static bool IsInstallerButNotInstalled() {
     if (!ExeHasInstallerResources()) {
         return false;
     }
-    if (ExeHasNameOfInstaller()) {
-        return true;
-    }
-    if (SeemsInstalled()) {
-        return false;
-    }
-    return true;
+    return !IsOurExeInstalled();
 }
 
 // I see people trying to use installer as a portable
@@ -624,36 +619,88 @@ static bool IsInstallerButNotInstalled() {
 // libmupdf.dll. We try to detect that case and show an error message instead.
 // TODO: I still see crashes due to delay loading of libmupdf.dll
 static void EnsureNotInstaller() {
-    if (IsInstallerButNotInstalled()) {
-        MessageBoxA(nullptr,
-                    "This is a SumatraPDF installer.\nEither install it with -install option or use portable "
-                    "version.\nDownload portable from https://www.sumatrapdfreader.org\n",
-                    "Error", MB_OK);
-        ::ExitProcess(1);
+    if (!ExeHasInstallerResources()) {
+        // this is not an installer
+        return;
     }
+    // TODO: this check is probably redundant with loading of libmupdf.dll
+    if (IsOurExeInstalled()) {
+        return;
+    }
+    // if we can load libmupdf.dll, then it's fine too. someone extracted libmupdf.dll
+    // as well or this could be VS build I'm debugging
+    HMODULE h = LoadLibraryA("libmupdf.dll");
+    if (IsValidHandle(h)) {
+        return;
+    }
+    MessageBoxA(nullptr,
+                "This is a SumatraPDF installer.\nEither install it with -install option or use portable "
+                "version.\nDownload portable from https://www.sumatrapdfreader.org\n",
+                "Error", MB_OK);
+    ::ExitProcess(1);
 }
 
-// TODO: autoupdate, was it ever working?
-// [/autoupdate]
-//     /autoupdate\tperforms an update with visible UI and minimal user interaction.
+constexpr const char* kInstallerHelpTmpl = R"(${appName} installer options:
+[-s] [-d <path>] [-with-filter] [-with-preview] [-x]
+
+-s
+    installs ${appName} silently (without user interaction)
+-d
+    set installation directory
+-with-filter
+    install search filter
+-with-preview
+    install shell preview
+-x
+    extracts the files, doesn't install
+-log
+    writes installation log to %LOCALAPPDATA%\sumatra-install-log.txt
+)";
+
+// TODO: maybe could set font on TDN_CREATED to Consolas, to better show the message
+HRESULT CALLBACK Pftaskdialogcallback(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, LONG_PTR lpRefData) {
+    switch (msg) {
+        case TDN_HYPERLINK_CLICKED:
+            WCHAR* s = (WCHAR*)lParam;
+            LaunchBrowser(s);
+            break;
+    }
+    return S_OK;
+}
 
 static void ShowInstallerHelp() {
     // Note: translation services aren't initialized at this point, so English only
-    const WCHAR* appName = GetAppName();
+    const char* appName = ToUtf8Temp(GetAppNameTemp());
+    str::Str msg{kInstallerHelpTmpl};
+    str::Replace(msg, "${appName}", appName);
 
-    AutoFreeWstr msg = str::Format(
-        L"%s installer options:\n\
-    [-s][-d <path>][-with-filter][-with-preview][-x]\n\
-    \n\
-    -s\tinstalls %s silently (without user interaction).\n\
-    -d\tchanges the directory where %s will be installed.\n\
-    -with-filter\tinstall search filter\n\
-    -with-preview\tinstall shell preview\n\
-    -x\tjust extracts the files contained within the installer.\n\
-",
-        appName, appName, appName);
-    AutoFreeWstr caption = str::Join(appName, L" Installer Usage");
-    MessageBoxW(nullptr, msg, caption, MB_OK);
+    bool ok = RedirectIOToExistingConsole();
+    if (ok) {
+        // if we're launched from console, print help to consle window
+        printf("%s\n%s\n", msg.Get(), "See more at https://www.sumatrapdfreader.org/docs/Installer-cmd-line-arguments");
+        return;
+    }
+
+    AutoFreeWstr title = str::Join(GetAppNameTemp(), L" installer usage");
+    TASKDIALOGCONFIG dialogConfig{};
+
+    DWORD flags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_SIZE_TO_CONTENT | TDF_ENABLE_HYPERLINKS;
+    if (trans::IsCurrLangRtl()) {
+        flags |= TDF_RTL_LAYOUT;
+    }
+    dialogConfig.cbSize = sizeof(TASKDIALOGCONFIG);
+    dialogConfig.pszWindowTitle = title.Get();
+    dialogConfig.pszMainInstruction = ToWstrTemp(msg.Get());
+    dialogConfig.pszContent =
+        LR"(<a href="https://www.sumatrapdfreader.org/docs/Installer-cmd-line-arguments">Read more on website</a>)";
+    dialogConfig.nDefaultButton = IDOK;
+    dialogConfig.dwFlags = flags;
+    dialogConfig.cxWidth = 320; // TODO: TDF_SIZE_TO_CONTENT doesn't seem to work
+    dialogConfig.pfCallback = Pftaskdialogcallback;
+    dialogConfig.dwCommonButtons = TDCBF_OK_BUTTON;
+    dialogConfig.pszMainIcon = TD_INFORMATION_ICON;
+
+    TaskDialogIndirect(&dialogConfig, nullptr, nullptr, nullptr);
 }
 
 // in Installer.cpp
@@ -733,11 +780,11 @@ static void LogDpiAwareness() {
 
 #if 0
 static void testLogf() {
-    const char* fileName = path::GetBaseNameNoFree(__FILE__);
+    const char* fileName = path::GetBaseNameTemp(__FILE__);
     WCHAR* gswin32c = L"this is a path";
     WCHAR* tmpFile = L"c:\foo\bar.txt";
-    AutoFree gswin = strconv::WstrToUtf8(gswin32c);
-    AutoFree tmpFileName = strconv::WstrToUtf8(path::GetBaseNameNoFree(tmpFile));
+    auto gswin = ToUtf8Temp(gswin32c);
+    auto tmpFileName = ToUtf8Temp(path::GetBaseNameTemp(tmpFile));
     logf("- %s:%d: using '%s' for creating '%%TEMP%%\\%s'\n", fileName, __LINE__, gswin.Get(), tmpFileName.Get());
 }
 #endif
@@ -756,9 +803,10 @@ bool gEnableMemLeak = false;
 // call this function before MemLeakInit() so that those allocations
 // don't show up
 static void ForceStartupLeaks() {
-    time_t secs;
+    time_t secs{0};
     struct tm buf_not_used;
     gmtime_s(&buf_not_used, &secs);
+    gmtime(&secs);
     WCHAR* path = GetExePath();
     FILE* fp = _wfopen(path, L"rb");
     str::Free(path);
@@ -767,8 +815,8 @@ static void ForceStartupLeaks() {
     }
 }
 
-int APIENTRY WinMain(HINSTANCE hInstance, [[maybe_unused]] HINSTANCE hPrevInstance, [[maybe_unused]] LPSTR cmdLine,
-                     [[maybe_unused]] int nCmdShow) {
+int APIENTRY WinMain(HINSTANCE hInstance, __unused HINSTANCE hPrevInstance, __unused LPSTR cmdLine,
+                     __unused int nCmdShow) {
     int retCode{1}; // by default it's error
     int nWithDde{0};
     WindowInfo* win{nullptr};
@@ -779,7 +827,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, [[maybe_unused]] HINSTANCE hPrevInstan
 
     CrashIf(hInstance != GetInstance());
 
-    // decide if we should enable mem leak detection
+    // TODO: decide if we should enable mem leak detection
 #if defined(DEBUG)
     gEnableMemLeak = true;
 #endif
@@ -807,13 +855,14 @@ int APIENTRY WinMain(HINSTANCE hInstance, [[maybe_unused]] HINSTANCE hPrevInstan
 
     srand((unsigned int)time(nullptr));
 
+    // for testing mem leak detection
+    void* maybeLeak{nullptr};
     if (gEnableMemLeak) {
         ForceStartupLeaks();
         MemLeakInit();
+        maybeLeak = malloc(10);
     }
-
-    // for testing mem leak detection
-    // char* tmp = new char[23];
+    // maybeLeak = malloc(10);
 
     if (!gIsAsanBuild) {
         SetupCrashHandler();
@@ -841,22 +890,25 @@ int APIENTRY WinMain(HINSTANCE hInstance, [[maybe_unused]] HINSTANCE hPrevInstan
     // gAddCrashMeMenu = true;
 
     {
-        strconv::StackWstrToUtf8 cmdLineA = GetCommandLineW();
+        TempStr cmdLineA = ToUtf8Temp(GetCommandLineW());
         logf("CmdLine: %s\n", cmdLineA.Get());
     }
 
     Flags i;
     ParseCommandLine(GetCommandLineW(), i);
 
+    /*
     if (false && gIsDebugBuild) {
         int TestLice(HINSTANCE hInstance, int nCmdShow);
         retCode = TestLice(hInstance, nCmdShow);
         goto Exit;
     }
+    */
 
     // TODO: maybe add cmd-line switch to enable debug logging
-    gEnableDbgLog = gIsDebugBuild || gIsDailyBuild || gIsPreReleaseBuild;
+    gEnableDbgLog = gIsDebugBuild || gIsPreReleaseBuild;
 
+#if defined(DEBUG)
     if (gIsDebugBuild || gIsPreReleaseBuild) {
         if (i.tester) {
             extern int TesterMain(); // in Tester.cpp
@@ -867,24 +919,13 @@ int APIENTRY WinMain(HINSTANCE hInstance, [[maybe_unused]] HINSTANCE hPrevInstan
             return RegressMain();
         }
     }
-
-    if (i.ramicro) {
-        gIsRaMicroBuild = true;
-        gWithTocEditor = true;
-    }
-    if (ExeHasNameOfRaMicro()) {
-        gIsRaMicroBuild = true;
-        gWithTocEditor = true;
-    }
+#endif
 
     if (i.showHelp && IsInstallerButNotInstalled()) {
         ShowInstallerHelp();
+        HandleRedirectedConsoleOnShutdown();
         return 0;
     }
-
-    // do this before running installer etc. so that we have disk / net permissions
-    // (default policy is to disallow everything)
-    InitializePolicies(i.restrictedUse);
 
     if (i.justExtractFiles) {
         ExtractInstallerFiles();
@@ -907,8 +948,13 @@ int APIENTRY WinMain(HINSTANCE hInstance, [[maybe_unused]] HINSTANCE hPrevInstan
         ::ExitProcess(retCode);
     }
 
+    // do this before running installer etc. so that we have disk / net permissions
+    // (default policy is to disallow everything)
+    InitializePolicies(i.restrictedUse);
+
     EnsureNotInstaller();
 
+#if defined(DEBUG)
     if (i.testRenderPage) {
         TestRenderPage(i);
         ShutdownCommon();
@@ -920,23 +966,29 @@ int APIENTRY WinMain(HINSTANCE hInstance, [[maybe_unused]] HINSTANCE hPrevInstan
         ShutdownCommon();
         return 0;
     }
+#endif
 
     if (i.appdataDir) {
         SetAppDataPath(i.appdataDir);
     }
 
+#if defined(DEBUG)
     if (i.testApp) {
         // in TestApp.cpp
         extern void TestApp(HINSTANCE hInstance);
         TestApp(hInstance);
         return 0;
     }
+#endif
 
     DetectExternalViewers();
 
     prefs::Load();
     UpdateGlobalPrefs(i);
     SetCurrentLang(i.lang ? i.lang : gGlobalPrefs->uiLanguage);
+
+    extern void ParseTranslationsFromResources(); // in Translations2.cpp
+    ParseTranslationsFromResources();
 
     // This allows ad-hoc comparison of gdi, gdi+ and gdi+ quick when used
     // in layout
@@ -949,8 +1001,6 @@ int APIENTRY WinMain(HINSTANCE hInstance, [[maybe_unused]] HINSTANCE hPrevInstan
 
     if (i.showConsole) {
         RedirectIOToConsole();
-        // TODO(port)
-        // fz_redirect_dll_io_to_console();
     }
 
     if (i.registerAsDefault) {
@@ -959,9 +1009,6 @@ int APIENTRY WinMain(HINSTANCE hInstance, [[maybe_unused]] HINSTANCE hPrevInstan
 
     if (i.pathsToBenchmark.size() > 0) {
         BenchFileOrDir(i.pathsToBenchmark);
-        if (i.showConsole) {
-            system("pause");
-        }
     }
 
     if (i.exitImmediately) {
@@ -1032,12 +1079,15 @@ int APIENTRY WinMain(HINSTANCE hInstance, [[maybe_unused]] HINSTANCE hPrevInstan
         restoreSession = gGlobalPrefs->restoreSession;
     }
     if (gGlobalPrefs->reopenOnce->size() > 0 && !gPluginURL) {
-        if (gGlobalPrefs->reopenOnce->size() == 1 && str::EqI(gGlobalPrefs->reopenOnce->at(0), L"SessionData")) {
+        if (gGlobalPrefs->reopenOnce->size() == 1 && str::EqI(gGlobalPrefs->reopenOnce->at(0), "SessionData")) {
             gGlobalPrefs->reopenOnce->FreeMembers();
             restoreSession = true;
         }
         while (gGlobalPrefs->reopenOnce->size() > 0) {
-            i.fileNames.Append(gGlobalPrefs->reopenOnce->Pop());
+            char* s = gGlobalPrefs->reopenOnce->Pop();
+            // TODO: is this a leak?
+            WCHAR* sw = strconv::Utf8ToWstr(s);
+            i.fileNames.Append(sw);
         }
     }
 
@@ -1072,7 +1122,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, [[maybe_unused]] HINSTANCE hPrevInstan
         if (restoreSession && FindWindowInfoByFile(filePath, false)) {
             continue;
         }
-        AutoFree path = strconv::WstrToUtf8(filePath);
+        auto path = ToUtf8Temp(filePath);
         win = LoadOnStartup(filePath, i, !win);
         if (!win) {
             retCode++;
@@ -1090,7 +1140,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, [[maybe_unused]] HINSTANCE hPrevInstan
             if (restoreSession && FindWindowInfoByFile(filePath, false)) {
                 continue;
             }
-            AutoFree path = strconv::WstrToUtf8(filePath);
+            auto path = ToUtf8Temp(filePath);
             win = LoadOnStartup(filePath, i, !win);
             if (!win) {
                 retCode++;
@@ -1125,7 +1175,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, [[maybe_unused]] HINSTANCE hPrevInstan
 
     if (i.stressTestPath) {
         // don't save file history and preference changes
-        RestrictPolicies(Perm_SavePreferences);
+        RestrictPolicies(Perm::SavePreferences);
         RebuildMenuBarForWindow(win);
         StartStressTest(&i, win);
         fastExit = true;
@@ -1140,7 +1190,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, [[maybe_unused]] HINSTANCE hPrevInstan
         gFileExistenceChecker = new FileExistenceChecker();
         gFileExistenceChecker->Start();
     }
-    // call this once it's clear whether Perm_SavePreferences has been granted
+    // call this once it's clear whether Perm::SavePreferences has been granted
     prefs::RegisterForFileChanges();
 
     // Change current directory for 2 reasons:
@@ -1164,6 +1214,9 @@ int APIENTRY WinMain(HINSTANCE hInstance, [[maybe_unused]] HINSTANCE hPrevInstan
 
 Exit:
     prefs::UnregisterForFileChanges();
+
+    TryAutoUpdateSelf();
+    HandleRedirectedConsoleOnShutdown();
 
     if (fastExit) {
         // leave all the remaining clean-up to the OS
@@ -1218,16 +1271,20 @@ Exit:
 
     delete gLogBuf;
     delete gLogAllocator;
+    DestroyTempAllocator();
 
+    if (gEnableMemLeak) {
+        // free(maybeLeak);
+        DumpMemLeaks();
+    }
+
+#if 0 // no longer seems to be needed in latest vs build, was probably early asan bug
     if (gIsAsanBuild) {
         // TODO: crashes in wild places without this
         // Note: ::ExitProcess(0) also crashes
         ::TerminateProcess(GetCurrentProcess(), 0);
     }
-
-    if (gEnableMemLeak) {
-        DumpMemLeaks();
-    }
+#endif
 
     return retCode;
 }

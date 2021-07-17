@@ -59,9 +59,9 @@ struct OverlappedEx {
 };
 
 // info needed to detect that a file has changed
-struct FileState {
-    FILETIME time;
-    i64 size;
+struct FileWatcherState {
+    FILETIME time{0};
+    i64 size{0};
 };
 
 struct WatchedDir {
@@ -70,20 +70,20 @@ struct WatchedDir {
     HANDLE hDir{nullptr};
     bool startMonitoring{true};
     OverlappedEx overlapped;
-    char buf[8 * 1024];
+    char buf[8 * 1024]{0};
 };
 
 struct WatchedFile {
-    WatchedFile* next;
-    WatchedDir* watchedDir;
-    const WCHAR* filePath;
+    WatchedFile* next{nullptr};
+    WatchedDir* watchedDir{nullptr};
+    const WCHAR* filePath{nullptr};
     std::function<void()> onFileChangedCb;
 
     // if true, the file is on a network drive and we have
     // to check if it changed manually, by periodically checking
     // file state for changes
-    bool isManualCheck;
-    FileState fileState;
+    bool isManualCheck{false};
+    FileWatcherState fileState;
 };
 
 static HANDLE g_threadHandle = 0;
@@ -106,18 +106,18 @@ static void AwakeWatcherThread() {
     SetEvent(g_threadControlHandle);
 }
 
-static void GetFileState(const WCHAR* filePath, FileState* fs) {
+static void GetFileState(const WCHAR* filePath, FileWatcherState* fs) {
     // Note: in my testing on network drive that is mac volume mounted
     // via parallels, lastWriteTime is not updated. lastAccessTime is,
     // but it's also updated when the file is being read from (e.g.
     // copy f.pdf f2.pdf will change lastAccessTime of f.pdf)
     // So I'm sticking with lastWriteTime
     fs->time = file::GetModificationTime(filePath);
-    AutoFreeStr path = strconv::WstrToUtf8(filePath);
+    auto path = ToUtf8Temp(filePath);
     fs->size = file::GetSize(path.AsView());
 }
 
-static bool FileStateEq(FileState* fs1, FileState* fs2) {
+static bool FileStateEq(FileWatcherState* fs1, FileWatcherState* fs2) {
     if (0 != CompareFileTime(&fs1->time, &fs2->time)) {
         return false;
     }
@@ -127,8 +127,8 @@ static bool FileStateEq(FileState* fs1, FileState* fs2) {
     return true;
 }
 
-static bool FileStateChanged(const WCHAR* filePath, FileState* fs) {
-    FileState fsTmp;
+static bool FileStateChanged(const WCHAR* filePath, FileWatcherState* fs) {
+    FileWatcherState fsTmp;
 
     GetFileState(filePath, &fsTmp);
     if (FileStateEq(fs, &fsTmp)) {
@@ -154,7 +154,7 @@ static void NotifyAboutFile(WatchedDir* d, const WCHAR* fileName) {
         if (wf->watchedDir != d) {
             continue;
         }
-        const WCHAR* wfFileName = path::GetBaseNameNoFree(wf->filePath);
+        const WCHAR* wfFileName = path::GetBaseNameTemp(wf->filePath);
 
         if (!str::EqI(fileName, wfFileName)) {
             continue;
@@ -200,7 +200,7 @@ static void CALLBACK ReadDirectoryChangesNotification(DWORD errCode, DWORD bytes
     // collect files that changed, removing duplicates
     WStrVec changedFiles;
     for (;;) {
-        AutoFreeWstr fileName(str::DupN(notify->FileName, notify->FileNameLength / sizeof(WCHAR)));
+        AutoFreeWstr fileName(str::Dup(notify->FileName, notify->FileNameLength / sizeof(WCHAR)));
         // files can get updated either by writing to them directly or
         // by writing to a .tmp file first and then moving that file in place
         // (the latter only yields a RENAMED action with the expected file name)
@@ -286,7 +286,7 @@ static void RunManualChecks() {
     }
 }
 
-static DWORD WINAPI FileWatcherThread([[maybe_unused]] void* param) {
+static DWORD WINAPI FileWatcherThread(__unused void* param) {
     HANDLE handles[1];
     // must be alertable to receive ReadDirectoryChangesW() callbacks and APCs
     BOOL alertable = TRUE;

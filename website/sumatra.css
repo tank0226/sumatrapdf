@@ -353,24 +353,45 @@ a.for-nav-icon:hover {
   display: flex;
   flex-direction: row;
   /* justify-content: center; */
-  align-items: center;
+  align-items: stretch;
   align-content: center;
   flex-wrap: wrap;
   width: 100%;
 }
 
 .testimonial {
+  display: flex;
+  flex-direction: column;
   width: 30%;
   /* background-color: #FBF0FA; */
   padding-left: 10px;
   padding-right: 10px;
+
+  margin-left: 6px;
+  margin-top: 6px;
+
+  border: 1px solid #dddddd;
+  border-radius: 8px;
 }
 
 .testimonials-text {
   font-style: italic;
+  flex-grow: 1;
 }
 
 .testimonial-who {
   font-size: 90%;
   float: right;
+  align-self: center;
+}
+
+/* keyboard shortcut */
+.ks {
+  margin-right: .2em;
+  color: #eb5757;
+  background: rgba(135, 131, 120, 0.07);
+  border-radius: 3px;
+  padding: .2em .4em;
+  font-family: monospace;
+  font-size: 1.2em;
 }

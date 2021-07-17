@@ -16,7 +16,6 @@
 #include "ProgressUpdateUI.h"
 #include "Notifications.h"
 #include "SumatraPDF.h"
-#include "Annotation.h"
 #include "WindowInfo.h"
 #include "Caption.h"
 #include "Tabs.h"
@@ -581,7 +580,7 @@ static void DrawCaptionButton(DRAWITEMSTRUCT* item, WindowInfo* win) {
         // draw the three lines
         COLORREF c = win->caption->textColor;
         u8 r, g, b;
-        UnpackRgb(c, r, g, b);
+        UnpackColor(c, r, g, b);
         float width = floor((float)rc.dy / 8.0f);
         Pen p(Color(r, g, b), width);
         rc.Inflate(-int(rc.dx * 0.2f + 0.5f), -int(rc.dy * 0.3f + 0.5f));
@@ -633,7 +632,7 @@ static void PaintCaptionBackground(HDC hdc, WindowInfo* win, bool useDoubleBuffe
         PaintParentBackground(win->hwndCaption, memDC);
         Graphics gfx(memDC);
         u8 r, g, b;
-        UnpackRgb(c, r, g, b);
+        UnpackColor(c, r, g, b);
         SolidBrush br(Color(win->caption->bgAlpha, r, g, b));
         gfx.FillRectangle(&br, rect.x, rect.y, rect.dx, rect.dy);
         if (useDoubleBuffer) {
@@ -952,7 +951,7 @@ static void MenuBarAsPopupMenu(WindowInfo* win, int x, int y) {
         AutoFreeWstr subMenuName(AllocArray<WCHAR>(mii.cch));
         mii.dwTypeData = subMenuName;
         GetMenuItemInfo(win->menu, i, TRUE, &mii);
-        AppendMenu(popup, MF_POPUP | MF_STRING, (UINT_PTR)mii.hSubMenu, subMenuName);
+        AppendMenuW(popup, MF_POPUP | MF_STRING, (UINT_PTR)mii.hSubMenu, subMenuName);
     }
 
     if (IsUIRightToLeft()) {

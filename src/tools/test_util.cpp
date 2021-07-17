@@ -29,13 +29,13 @@ extern void SquareTreeTest();
 extern void StrFormatTest();
 extern void StrTest();
 extern void TrivialHtmlParser_UnitTests();
-// extern void VarintGobTest();
 extern void VecTest();
 extern void WinUtilTest();
 extern void StrFormatTest();
 
-int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
+int main(__unused int argc, __unused char** argv) {
     printf("Running unit tests\n");
+
     InitDynCalls();
     BaseUtilTest();
     ByteOrderTests();
@@ -52,7 +52,6 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     SquareTreeTest();
     StrTest();
     TrivialHtmlParser_UnitTests();
-    // VarintGobTest();
     VecTest();
     WinUtilTest();
     SumatraPDF_UnitTests();
@@ -60,5 +59,6 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     StrFormatTest();
 
     int res = utassert_print_results();
+    DestroyTempAllocator();
     return res;
 }

@@ -2,9 +2,9 @@
    License: GPLv3 */
 
 struct PageRange {
-    int start = 1;
+    int start{1};
     // end == INT_MAX means to the last page
-    int end = INT_MAX;
+    int end{INT_MAX};
 };
 
 struct Flags {
@@ -40,7 +40,6 @@ struct Flags {
     bool invertColors = false;
     bool regress = false;
     bool tester = false;
-    bool ramicro = false;
     // -new-window, if true and we're using tabs, opens
     // the document in new window
     bool inNewWindow = false;

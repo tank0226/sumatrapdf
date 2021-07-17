@@ -213,9 +213,9 @@ int ui_popup_item_aux(const char *title, int flags);
 void ui_popup_end(void);
 
 void ui_init_open_file(const char *dir, int (*filter)(const char *fn));
-int ui_open_file(char filename[], const char *label);
+int ui_open_file(char *filename, const char *label);
 void ui_init_save_file(const char *path, int (*filter)(const char *fn));
-int ui_save_file(char filename[], void (*extra_panel)(void), const char *label);
+int ui_save_file(char *filename, void (*extra_panel)(void), const char *label);
 
 void ui_show_warning_dialog(const char *fmt, ...);
 void ui_show_error_dialog(const char *fmt, ...);
@@ -261,6 +261,8 @@ extern int reloadrequested;
 extern char *search_needle;
 extern int search_hit_count;
 extern fz_quad search_hit_quads[];
+extern int page_contents_changed;
+extern int page_annots_changed;
 
 int search_has_results(void);
 enum {
@@ -275,7 +277,6 @@ void do_annotate_canvas(fz_irect canvas_area);
 void do_redact_panel(void);
 void do_widget_canvas(fz_irect canvas_area);
 void load_page(void);
-void render_page(void);
 void update_title(void);
 void reload_document(void);
 void reload(void);

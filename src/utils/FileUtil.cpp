@@ -3,11 +3,9 @@
 
 #include "utils/BaseUtil.h"
 #include "utils/FileUtil.h"
-
-#if OS_WIN
 #include "utils/ScopedWin.h"
 #include "utils/WinUtil.h"
-#endif
+#include "utils/Log.h"
 
 // we pad data read with 3 zeros for convenience. That way returned
 // data is a valid null-terminated string or WCHAR*.
@@ -21,7 +19,7 @@ bool IsSep(char c) {
 }
 
 // do not free, returns pointer inside <path>
-const char* GetBaseNameNoFree(const char* path) {
+const char* GetBaseNameTemp(const char* path) {
     const char* s = path + str::Len(path);
     for (; s > path; s--) {
         if (IsSep(s[-1])) {
@@ -39,12 +37,12 @@ std::string_view GetBaseName(std::string_view path) {
             break;
         }
     }
-    const char* res = str::DupN(s, end - s);
+    const char* res = str::Dup(s, end - s);
     return res;
 }
 
 // do not free, returns pointer inside <path>
-const char* GetExtNoFree(const char* path) {
+const char* GetExtNoFreeTemp(const char* path) {
     const char* ext = nullptr;
     char c = *path;
     while (c) {
@@ -62,7 +60,7 @@ const char* GetExtNoFree(const char* path) {
     return ext;
 }
 
-char* JoinUtf(const char* path, const char* fileName, Allocator* allocator) {
+char* Join(const char* path, const char* fileName, Allocator* allocator) {
     if (IsSep(*fileName)) {
         fileName++;
     }
@@ -85,7 +83,7 @@ bool IsDirectory(std::wstring_view path) {
 }
 
 bool IsDirectory(std::string_view path) {
-    AutoFreeWstr pathW = strconv::Utf8ToWstr(path);
+    auto pathW = ToWstrTemp(path);
     DWORD attrs = GetFileAttributesW(pathW);
     if (INVALID_FILE_ATTRIBUTES == attrs) {
         return false;
@@ -96,13 +94,12 @@ bool IsDirectory(std::string_view path) {
     return false;
 }
 
-#if OS_WIN
 bool IsSep(WCHAR c) {
     return '\\' == c || '/' == c;
 }
 
 // do not free, returns pointer inside <path>
-const WCHAR* GetBaseNameNoFree(const WCHAR* path) {
+const WCHAR* GetBaseNameTemp(const WCHAR* path) {
     const WCHAR* end = path + str::Len(path);
     while (end > path) {
         if (IsSep(end[-1])) {
@@ -115,7 +112,7 @@ const WCHAR* GetBaseNameNoFree(const WCHAR* path) {
 
 // returns extension e.g. ".pdf"
 // do not free, returns pointer inside <path>
-const WCHAR* GetExtNoFree(const WCHAR* path) {
+const WCHAR* GetExtNoFreeTemp(const WCHAR* path) {
     const WCHAR* ext = path + str::Len(path);
     while ((ext > path) && !IsSep(*ext)) {
         if (*ext == '.') {
@@ -128,58 +125,62 @@ const WCHAR* GetExtNoFree(const WCHAR* path) {
 
 // caller has to free() the results
 WCHAR* GetDir(const WCHAR* path) {
-    const WCHAR* baseName = GetBaseNameNoFree(path);
+    const WCHAR* baseName = GetBaseNameTemp(path);
     if (baseName == path) {
         // relative directory
         return str::Dup(L".");
     }
     if (baseName == path + 1) {
         // relative root
-        return str::DupN(path, 1);
+        return str::Dup(path, 1);
     }
     if (baseName == path + 3 && path[1] == ':') {
         // local drive root
-        return str::DupN(path, 3);
+        return str::Dup(path, 3);
     }
     if (baseName == path + 2 && str::StartsWith(path, L"\\\\")) {
         // server root
         return str::Dup(path);
     }
     // any subdirectory
-    return str::DupN(path, baseName - path - 1);
+    return str::Dup(path, baseName - path - 1);
 }
 
 // caller has to free() the results
 std::string_view GetDir(std::string_view pathSV) {
     const char* path = pathSV.data();
-    const char* baseName = GetBaseNameNoFree(path);
+    const char* baseName = GetBaseNameTemp(path);
     if (baseName == path) {
         // relative directory
         return str::Dup(".");
     }
     if (baseName == path + 1) {
         // relative root
-        return str::DupN(path, 1);
+        return str::Dup(path, 1);
     }
     if (baseName == path + 3 && path[1] == ':') {
         // local drive root
-        return str::DupN(path, 3);
+        return str::Dup(path, 3);
     }
     if (baseName == path + 2 && str::StartsWith(path, "\\\\")) {
         // server root
         return str::Dup(path);
     }
     // any subdirectory
-    return str::DupN(path, baseName - path - 1);
+    return str::Dup(path, baseName - path - 1);
 }
 
 WCHAR* Join(const WCHAR* path, const WCHAR* fileName, const WCHAR* fileName2) {
+    // TODO: not sure if should allow null path
     if (IsSep(*fileName)) {
         fileName++;
     }
     const WCHAR* sepStr = nullptr;
-    if (!IsSep(path[str::Len(path) - 1])) {
-        sepStr = L"\\";
+    size_t pathLen = str::Len(path);
+    if (pathLen > 0) {
+        if (!IsSep(path[pathLen - 1])) {
+            sepStr = L"\\";
+        }
     }
     WCHAR* res = str::Join(path, sepStr, fileName);
     if (fileName2) {
@@ -234,10 +235,10 @@ WCHAR* Normalize(const WCHAR* path) {
     if (cch && cch <= MAX_PATH) {
         AutoFreeWstr shortpath(AllocArray<WCHAR>(cch));
         GetShortPathName(fullpath, shortpath, cch);
-        if (str::Len(path::GetBaseNameNoFree(normpath)) + path::GetBaseNameNoFree(shortpath) - shortpath < MAX_PATH) {
+        if (str::Len(path::GetBaseNameTemp(normpath)) + path::GetBaseNameTemp(shortpath) - shortpath < MAX_PATH) {
             // keep the long filename if possible
-            *(WCHAR*)path::GetBaseNameNoFree(shortpath) = '\0';
-            return str::Join(shortpath, path::GetBaseNameNoFree(normpath));
+            *(WCHAR*)path::GetBaseNameTemp(shortpath) = '\0';
+            return str::Join(shortpath, path::GetBaseNameTemp(normpath));
         }
         return shortpath.StealData();
     }
@@ -301,8 +302,8 @@ bool IsSame(const WCHAR* path1, const WCHAR* path2) {
     }
 
     // we assume that if the last part doesn't match, they can't be the same
-    const WCHAR* base1 = path::GetBaseNameNoFree(path1);
-    const WCHAR* base2 = path::GetBaseNameNoFree(path2);
+    const WCHAR* base1 = path::GetBaseNameTemp(path1);
+    const WCHAR* base2 = path::GetBaseNameTemp(path2);
     if (!str::EqI(base1, base2)) {
         return false;
     }
@@ -392,12 +393,12 @@ static bool MatchWildcardsRec(const WCHAR* fileName, const WCHAR* filter) {
    all filenames consisting of only a single character and
    having any extension) */
 bool Match(const WCHAR* path, const WCHAR* filter) {
-    path = GetBaseNameNoFree(path);
-    while (str::FindChar(filter, ';')) {
+    path = GetBaseNameTemp(path);
+    while (str::FindChar(filter, L';')) {
         if (MatchWildcardsRec(path, filter)) {
             return true;
         }
-        filter = str::FindChar(filter, ';') + 1;
+        filter = str::FindChar(filter, L';') + 1;
     }
     return MatchWildcardsRec(path, filter);
 }
@@ -408,7 +409,7 @@ bool IsAbsolute(const WCHAR* path) {
 
 // returns the path to either the %TEMP% directory or a
 // non-existing file inside whose name starts with filePrefix
-WCHAR* GetTempPath(const WCHAR* filePrefix) {
+WCHAR* GetTempFilePath(const WCHAR* filePrefix) {
     WCHAR tempDir[MAX_PATH - 14] = {0};
     DWORD res = ::GetTempPathW(dimof(tempDir), tempDir);
     if (!res || res >= dimof(tempDir)) {
@@ -438,8 +439,6 @@ WCHAR* GetPathOfFileInAppDir(const WCHAR* fileName) {
     AutoFreeWstr path = path::Join(moduleDir, fileName);
     return path::Normalize(path);
 }
-
-#endif // OS_WIN
 } // namespace path
 
 namespace file {
@@ -449,12 +448,8 @@ FILE* OpenFILE(const char* path) {
     if (!path) {
         return nullptr;
     }
-#if OS_WIN
-    AutoFreeWstr pathW = strconv::Utf8ToWstr(path);
+    auto pathW = ToWstrTemp(path);
     return OpenFILE(pathW.Get());
-#else
-    return fopen(path, "rb");
-#endif
 }
 
 std::span<u8> ReadFileWithAllocator(const char* filePath, Allocator* allocator) {
@@ -493,9 +488,14 @@ std::span<u8> ReadFileWithAllocator(const char* filePath, Allocator* allocator) 
     nRead = fread((void*)d, 1, size, fp);
     if (nRead != size) {
         int err = ferror(fp);
-        CrashIf(err == 0);
         int isEof = feof(fp);
-        CrashIf(isEof != 0);
+        logf("ReadFileWithAllocator: fread() failed, path: '%s', size: %d, nRead: %d, err: %d, isEof: %d\n", filePath,
+             (int)size, (int)nRead, err, isEof);
+        // we should either get eof or err
+        // either way shouldn't happen because we're reading the exact size of file
+        // I've seen this in crash reports so maybe the files are over-written
+        // between the time I do fseek() and fread()
+        CrashIf(!(isEof || (err != 0)));
         goto Error;
     }
 
@@ -511,31 +511,28 @@ std::span<u8> ReadFile(std::string_view path) {
 }
 
 std::span<u8> ReadFile(const WCHAR* filePath) {
-    AutoFree path = strconv::WstrToUtf8(filePath);
-    return ReadFileWithAllocator(path.data, nullptr);
+    auto path = ToUtf8Temp(filePath);
+    return ReadFileWithAllocator(path.Get(), nullptr);
 }
 
 bool WriteFile(const char* filePath, std::span<u8> d) {
-    WCHAR buf[512];
-    strconv::Utf8ToWcharBuf(filePath, str::Len(filePath), buf, dimof(buf));
+    auto buf = ToWstrTemp(filePath);
     return WriteFile(buf, d);
 }
 
 bool Exists(std::string_view path) {
-    WCHAR* wpath = strconv::Utf8ToWstr(path);
+    WCHAR* wpath = ToWstrTemp(path);
     bool exists = Exists(wpath);
-    free(wpath);
     return exists;
 }
 
-#if OS_WIN
 HANDLE OpenReadOnly(const WCHAR* filePath) {
-    return CreateFile(filePath, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    return CreateFileW(filePath, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
 }
 
 HANDLE OpenReadOnly(std::string_view path) {
-    AutoFreeWstr filePath = strconv::Utf8ToWstr(path);
-    return CreateFile(filePath, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    auto filePath = ToWstrTemp(path);
+    return CreateFileW(filePath, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
 }
 
 FILE* OpenFILE(const WCHAR* path) {
@@ -585,8 +582,8 @@ i64 GetSize(std::string_view filePath) {
 }
 
 std::span<u8> ReadFileWithAllocator(const WCHAR* path, Allocator* allocator) {
-    AutoFree pathUtf8 = strconv::WstrToUtf8(path);
-    return ReadFileWithAllocator(pathUtf8.data, allocator);
+    auto pathA = ToUtf8Temp(path);
+    return ReadFileWithAllocator(pathA.Get(), allocator);
 }
 
 // buf must be at least toRead in size (note: it won't be zero-terminated)
@@ -665,28 +662,29 @@ bool StartsWith(const WCHAR* filePath, const char* s) {
     return file::StartsWithN(filePath, s, str::Len(s));
 }
 
-int GetZoneIdentifier(const WCHAR* filePath) {
-    AutoFreeWstr path(str::Join(filePath, L":Zone.Identifier"));
-    return GetPrivateProfileIntW(L"ZoneTransfer", L"ZoneId", URLZONE_INVALID, path);
+int GetZoneIdentifier(const char* filePath) {
+    AutoFreeStr path(str::Join(filePath, ":Zone.Identifier"));
+    auto pathW = ToWstrTemp(path.AsView());
+    return GetPrivateProfileIntW(L"ZoneTransfer", L"ZoneId", URLZONE_INVALID, pathW);
 }
 
-bool SetZoneIdentifier(const WCHAR* filePath, int zoneId) {
-    AutoFreeWstr path(str::Join(filePath, L":Zone.Identifier"));
+bool SetZoneIdentifier(const char* filePath, int zoneId) {
+    AutoFreeStr path(str::Join(filePath, ":Zone.Identifier"));
     AutoFreeWstr id(str::Format(L"%d", zoneId));
-    return WritePrivateProfileStringW(L"ZoneTransfer", L"ZoneId", id, path);
+    auto pathW = ToWstrTemp(path.AsView());
+    return WritePrivateProfileStringW(L"ZoneTransfer", L"ZoneId", id, pathW);
 }
 
-bool DeleteZoneIdentifier(const WCHAR* filePath) {
-    AutoFreeWstr path(str::Join(filePath, L":Zone.Identifier"));
-    return !!DeleteFileW(path.Get());
+bool DeleteZoneIdentifier(const char* filePath) {
+    AutoFreeStr path(str::Join(filePath, ":Zone.Identifier"));
+    auto pathW = ToWstrTemp(path.AsView());
+    return !!DeleteFileW(pathW);
 }
 
-#endif // OS_WIN
 } // namespace file
 
 namespace dir {
 
-#if OS_WIN
 // TODO: duplicate with path::IsDirectory()
 bool Exists(const WCHAR* dir) {
     if (nullptr == dir) {
@@ -737,12 +735,8 @@ bool RemoveAll(const WCHAR* dir) {
     return res == 0;
 }
 
-#endif // OS_WIN
-
 } // namespace dir
 
-#if OS_WIN
 bool FileTimeEq(const FILETIME& a, const FILETIME& b) {
     return a.dwLowDateTime == b.dwLowDateTime && a.dwHighDateTime == b.dwHighDateTime;
 }
-#endif

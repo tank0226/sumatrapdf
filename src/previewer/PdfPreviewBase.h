@@ -57,7 +57,7 @@ class PreviewBase : public IThumbnailProvider,
     IFACEMETHODIMP GetThumbnail(uint cx, HBITMAP* phbmp, WTS_ALPHATYPE* pdwAlpha);
 
     // IInitializeWithStream
-    IFACEMETHODIMP Initialize(IStream* pStm, [[maybe_unused]] DWORD grfMode) {
+    IFACEMETHODIMP Initialize(IStream* pStm, __unused DWORD grfMode) {
         m_pStream = pStm;
         if (!m_pStream) {
             return E_INVALIDARG;
@@ -157,7 +157,7 @@ class PreviewBase : public IThumbnailProvider,
         *phwnd = m_hwndParent;
         return S_OK;
     }
-    IFACEMETHODIMP ContextSensitiveHelp([[maybe_unused]] BOOL fEnterMode) {
+    IFACEMETHODIMP ContextSensitiveHelp(__unused BOOL fEnterMode) {
         return E_NOTIMPL;
     }
 
@@ -167,8 +167,8 @@ class PreviewBase : public IThumbnailProvider,
     }
 
     // IPersistFile (for Windows XP)
-    IFACEMETHODIMP Load(LPCOLESTR pszFileName, [[maybe_unused]] DWORD dwMode) {
-        strconv::StackWstrToUtf8 fileName = pszFileName;
+    IFACEMETHODIMP Load(LPCOLESTR pszFileName, __unused DWORD dwMode) {
+        auto fileName = ToUtf8Temp(pszFileName);
         dbglogf("PdfPreview: PreviewBase::Load('%s')\n", fileName.Get());
 
         HANDLE hFile = CreateFile(pszFileName, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
@@ -202,13 +202,13 @@ class PreviewBase : public IThumbnailProvider,
     IFACEMETHODIMP IsDirty() {
         return E_NOTIMPL;
     }
-    IFACEMETHODIMP Save([[maybe_unused]] LPCOLESTR pszFileName, [[maybe_unused]] BOOL bRemember) {
+    IFACEMETHODIMP Save(__unused LPCOLESTR pszFileName, __unused BOOL bRemember) {
         return E_NOTIMPL;
     }
-    IFACEMETHODIMP SaveCompleted([[maybe_unused]] LPCOLESTR pszFileName) {
+    IFACEMETHODIMP SaveCompleted(__unused LPCOLESTR pszFileName) {
         return E_NOTIMPL;
     }
-    IFACEMETHODIMP GetCurFile([[maybe_unused]] LPOLESTR* ppszFileName) {
+    IFACEMETHODIMP GetCurFile(__unused LPOLESTR* ppszFileName) {
         return E_NOTIMPL;
     }
 
@@ -221,9 +221,8 @@ class PreviewBase : public IThumbnailProvider,
         WTS_ALPHATYPE dummy;
         return GetThumbnail(m_extractCx, phBmpThumbnail, &dummy);
     }
-    IFACEMETHODIMP GetLocation([[maybe_unused]] LPWSTR pszPathBuffer, [[maybe_unused]] DWORD cch,
-                               [[maybe_unused]] DWORD* pdwPriority, const SIZE* prgSize,
-                               [[maybe_unused]] DWORD dwRecClrDepth, DWORD* pdwFlags) {
+    IFACEMETHODIMP GetLocation(__unused LPWSTR pszPathBuffer, __unused DWORD cch, __unused DWORD* pdwPriority,
+                               const SIZE* prgSize, __unused DWORD dwRecClrDepth, DWORD* pdwFlags) {
         if (!prgSize || !pdwFlags) {
             return E_INVALIDARG;
         }
@@ -271,27 +270,27 @@ class PreviewBase : public IThumbnailProvider,
     virtual EngineBase* LoadEngine(IStream* stream) = 0;
 };
 
-class CPdfPreview : public PreviewBase {
+class PdfPreview : public PreviewBase {
   public:
-    CPdfPreview(long* plRefCount) : PreviewBase(plRefCount, SZ_PDF_PREVIEW_CLSID) {
+    PdfPreview(long* plRefCount) : PreviewBase(plRefCount, SZ_PDF_PREVIEW_CLSID) {
     }
 
   protected:
     EngineBase* LoadEngine(IStream* stream) override;
 };
 
-class CXpsPreview : public PreviewBase {
+class XpsPreview : public PreviewBase {
   public:
-    CXpsPreview(long* plRefCount) : PreviewBase(plRefCount, SZ_XPS_PREVIEW_CLSID) {
+    XpsPreview(long* plRefCount) : PreviewBase(plRefCount, SZ_XPS_PREVIEW_CLSID) {
     }
 
   protected:
     EngineBase* LoadEngine(IStream* stream) override;
 };
 
-class CDjVuPreview : public PreviewBase {
+class DjVuPreview : public PreviewBase {
   public:
-    CDjVuPreview(long* plRefCount) : PreviewBase(plRefCount, SZ_DJVU_PREVIEW_CLSID) {
+    DjVuPreview(long* plRefCount) : PreviewBase(plRefCount, SZ_DJVU_PREVIEW_CLSID) {
         m_gdiScope = new ScopedGdiPlus();
     }
 
@@ -299,36 +298,36 @@ class CDjVuPreview : public PreviewBase {
     EngineBase* LoadEngine(IStream* stream) override;
 };
 
-class CEpubPreview : public PreviewBase {
+class EpubPreview : public PreviewBase {
   public:
-    CEpubPreview(long* plRefCount);
-    ~CEpubPreview();
+    EpubPreview(long* plRefCount);
+    ~EpubPreview();
 
   protected:
     EngineBase* LoadEngine(IStream* stream) override;
 };
 
-class CFb2Preview : public PreviewBase {
+class Fb2Preview : public PreviewBase {
   public:
-    CFb2Preview(long* plRefCount);
-    ~CFb2Preview();
+    Fb2Preview(long* plRefCount);
+    ~Fb2Preview();
 
   protected:
     EngineBase* LoadEngine(IStream* stream) override;
 };
 
-class CMobiPreview : public PreviewBase {
+class MobiPreview : public PreviewBase {
   public:
-    CMobiPreview(long* plRefCount);
-    ~CMobiPreview();
+    MobiPreview(long* plRefCount);
+    ~MobiPreview();
 
   protected:
     EngineBase* LoadEngine(IStream* stream) override;
 };
 
-class CCbxPreview : public PreviewBase {
+class CbxPreview : public PreviewBase {
   public:
-    CCbxPreview(long* plRefCount) : PreviewBase(plRefCount, SZ_CBX_PREVIEW_CLSID) {
+    CbxPreview(long* plRefCount) : PreviewBase(plRefCount, SZ_CBX_PREVIEW_CLSID) {
         m_gdiScope = new ScopedGdiPlus();
     }
 
@@ -336,9 +335,9 @@ class CCbxPreview : public PreviewBase {
     EngineBase* LoadEngine(IStream* stream) override;
 };
 
-class CTgaPreview : public PreviewBase {
+class TgaPreview : public PreviewBase {
   public:
-    CTgaPreview(long* plRefCount) : PreviewBase(plRefCount, SZ_TGA_PREVIEW_CLSID) {
+    TgaPreview(long* plRefCount) : PreviewBase(plRefCount, SZ_TGA_PREVIEW_CLSID) {
         m_gdiScope = new ScopedGdiPlus();
     }
 

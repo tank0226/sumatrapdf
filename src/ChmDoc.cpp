@@ -14,7 +14,6 @@
 
 #include "wingui/TreeModel.h"
 
-#include "Annotation.h"
 #include "EngineBase.h"
 #include "EbookBase.h"
 #include "ChmDoc.h"
@@ -54,7 +53,7 @@ std::span<u8> ChmDoc::GetData(const char* fileNameIn) {
     int res = chm_resolve_object(chmHandle, fileName, &info);
     if (CHM_RESOLVE_SUCCESS != res && str::FindChar(fileName, '\\')) {
         // Microsoft's HTML Help CHM viewer tolerates backslashes in URLs
-        str::TransChars(fileName, "\\", "/");
+        str::TransCharsInPlace(fileName, "\\", "/");
         res = chm_resolve_object(chmHandle, fileName, &info);
     }
 
@@ -85,12 +84,12 @@ char* ChmDoc::ToUtf8(const u8* text, uint overrideCP) {
         return str::Dup(s + 3);
     }
     if (overrideCP) {
-        return (char*)strconv::ToMultiByte(s, overrideCP, CP_UTF8).data();
+        return (char*)strconv::ToMultiByteV(s, overrideCP, CP_UTF8).data();
     }
     if (CP_UTF8 == codepage) {
         return str::Dup(s);
     }
-    return (char*)strconv::ToMultiByte(s, codepage, CP_UTF8).data();
+    return (char*)strconv::ToMultiByteV(s, codepage, CP_UTF8).data();
 }
 
 WCHAR* ChmDoc::ToStr(const char* text) {
@@ -324,8 +323,8 @@ WCHAR* ChmDoc::GetProperty(DocumentProperty prop) {
     }
     // TODO: shouldn't it be up to the front-end to normalize whitespace?
     if (result) {
-        // TODO: original code called str::RemoveChars(result, "\n\r\t")
-        str::NormalizeWS(result);
+        // TODO: original code called str::RemoveCharsInPlace(result, "\n\r\t")
+        str::NormalizeWSInPlace(result);
     }
     return result.StealData();
 }
@@ -334,7 +333,7 @@ const char* ChmDoc::GetHomePath() {
     return homePath;
 }
 
-static int ChmEnumerateEntry(struct chmFile* chmHandle, struct chmUnitInfo* info, [[maybe_unused]] void* data) {
+static int ChmEnumerateEntry(struct chmFile* chmHandle, struct chmUnitInfo* info, __unused void* data) {
     if (str::IsEmpty(info->path)) {
         return CHM_ENUMERATOR_CONTINUE;
     }
@@ -371,7 +370,7 @@ static bool VisitChmTocItem(EbookTocVisitor* visitor, HtmlElement* el, uint cp, 
         AutoFreeWstr attrName(el->GetAttribute("name"));
         AutoFreeWstr attrVal(el->GetAttribute("value"));
         if (attrName && attrVal && cp != CP_CHM_DEFAULT) {
-            AutoFree bytes(strconv::WstrToCodePage(attrVal, CP_CHM_DEFAULT));
+            AutoFree bytes(strconv::WstrToCodePageV(CP_CHM_DEFAULT, attrVal));
             attrVal.Set(strconv::FromCodePage(bytes.Get(), cp));
         }
         if (!attrName || !attrVal) {
@@ -419,7 +418,7 @@ static bool VisitChmIndexItem(EbookTocVisitor* visitor, HtmlElement* el, uint cp
         AutoFreeWstr attrName(el->GetAttribute("name"));
         AutoFreeWstr attrVal(el->GetAttribute("value"));
         if (attrName && attrVal && cp != CP_CHM_DEFAULT) {
-            AutoFree bytes(strconv::WstrToCodePage(attrVal, CP_CHM_DEFAULT));
+            AutoFree bytes(strconv::WstrToCodePageV(CP_CHM_DEFAULT, attrVal));
             attrVal.Set(strconv::FromCodePage(bytes.Get(), cp));
         }
         if (!attrName || !attrVal) {

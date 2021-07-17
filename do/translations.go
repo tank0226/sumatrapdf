@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io/ioutil"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -19,19 +20,19 @@ func translationsPath() string {
 func translationsSha1HexMust(d []byte) string {
 	lines := toTrimmedLines(d)
 	sha1 := lines[1]
-	fatalIf(len(sha1) != 40, "lastTranslationsSha1HexMust: '%s' doesn't look like sha1", sha1)
+	panicIf(len(sha1) != 40, "lastTranslationsSha1HexMust: '%s' doesn't look like sha1", sha1)
 	return sha1
 }
 
 func lastTranslationsSha1HexMust() string {
 	d, err := ioutil.ReadFile(translationsPath())
-	panicIfErr(err)
+	must(err)
 	return translationsSha1HexMust(d)
 }
 
 func saveTranslationsMust(d []byte) {
 	err := ioutil.WriteFile(translationsPath(), d, 0644)
-	panicIfErr(err)
+	must(err)
 }
 
 func verifyTranslationsMust() {
@@ -42,7 +43,7 @@ func verifyTranslationsMust() {
 	url := fmt.Sprintf("%s/dltrans?app=SumatraPDF&sha1=%s", translationServer, sha1)
 	d := httpDlMust(url)
 	lines := toTrimmedLines(d)
-	fatalIf(lines[1] != "No change", "translations changed, run ./doit.bat -trans-dl\n")
+	panicIf(lines[1] != "No change", "translations changed, run ./doit.bat -trans-dl\n")
 }
 
 func validSha1(s string) bool {
@@ -179,7 +180,7 @@ func getFilesToProcess() []string {
 }
 
 var (
-	translationPattern = regexp.MustCompile(`\b_TRN?\("(.*?)"\)`)
+	translationPattern = regexp.MustCompile(`\b_TR[UN]?\("(.*?)"\)`)
 )
 
 func extractTranslations(s string) []string {
@@ -323,6 +324,13 @@ func generateCode(s string) {
 
 func downloadAndUpdateTranslationsIfChanged() bool {
 	d := downloadTranslations()
+
+	// write what we download so that when we crash
+	// during processing, we can inspect it
+	// file removed if processing ok
+	tmpPath := filepath.Join("strings", "translations-temp.txt")
+	u.WriteFileMust(tmpPath, d)
+
 	s := string(d)
 	//logf("Downloaded translations:\n%s\n", s)
 	lines := strings.Split(s, "\n")
@@ -337,6 +345,8 @@ func downloadAndUpdateTranslationsIfChanged() bool {
 	logf("Translation data size: %d\n", len(s))
 	generateCode(s)
 	saveLastDownload(d)
+
+	must(os.Remove(tmpPath))
 	return true
 }
 

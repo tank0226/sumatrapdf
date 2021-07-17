@@ -126,7 +126,7 @@ $(OUT)/source/%.o : source/%.c
 	$(CC_CMD) $(WARNING_CFLAGS) -Wdeclaration-after-statement $(LIB_CFLAGS) $(THIRD_CFLAGS)
 
 $(OUT)/source/%.o : source/%.cpp
-	$(CXX_CMD) $(WARNING_CFLAGS) $(LIB_CFLAGS) $(THIRD_CFLAGS)
+	$(CXX_CMD) $(WARNING_CFLAGS) $(LIB_CFLAGS) $(THIRD_CFLAGS) $(TESSERACT_BUILD_CFLAGS)
 
 $(OUT)/platform/%.o : platform/%.c
 	$(CC_CMD) $(WARNING_CFLAGS)
@@ -151,6 +151,7 @@ MUPDF_SRC += $(sort $(wildcard source/pdf/*.c))
 MUPDF_SRC += $(sort $(wildcard source/xps/*.c))
 MUPDF_SRC += $(sort $(wildcard source/svg/*.c))
 MUPDF_SRC += $(sort $(wildcard source/html/*.c))
+MUPDF_SRC += $(sort $(wildcard source/reflow/*.c))
 MUPDF_SRC += $(sort $(wildcard source/cbz/*.c))
 
 MUPDF_OBJ := $(MUPDF_SRC:%.c=$(OUT)/%.o)
@@ -159,7 +160,6 @@ MUPDF_OBJ := $(MUPDF_OBJ:%.cpp=$(OUT)/%.o)
 THREAD_SRC := source/helpers/mu-threads/mu-threads.c
 THREAD_OBJ := $(THREAD_SRC:%.c=$(OUT)/%.o)
 
-PKCS7_SRC := source/helpers/pkcs7/pkcs7-check.c
 PKCS7_SRC += source/helpers/pkcs7/pkcs7-openssl.c
 PKCS7_OBJ := $(PKCS7_SRC:%.c=$(OUT)/%.o)
 
@@ -238,7 +238,9 @@ LIBS_TO_INSTALL_IN_LIB = $(MUPDF_LIB_IMPORT)
 else
 LIBS_TO_INSTALL_IN_LIB = $(MUPDF_LIB)
 endif
+ifneq ($(USE_SYSTEM_GLUT),yes)
 THIRD_GLUT_LIB = $(OUT)/libmupdf-glut.a
+endif
 THREAD_LIB = $(OUT)/libmupdf-threads.a
 PKCS7_LIB = $(OUT)/libmupdf-pkcs7.a
 
@@ -250,7 +252,9 @@ else
 MUPDF_LIB = $(OUT)/libmupdf.a
 LIBS_TO_INSTALL_IN_LIB = $(MUPDF_LIB) $(THIRD_LIB)
 THIRD_LIB = $(OUT)/libmupdf-third.a
+ifneq ($(USE_SYSTEM_GLUT),yes)
 THIRD_GLUT_LIB = $(OUT)/libmupdf-glut.a
+endif
 THREAD_LIB = $(OUT)/libmupdf-threads.a
 PKCS7_LIB = $(OUT)/libmupdf-pkcs7.a
 
@@ -453,7 +457,11 @@ all: libs apps
 clean:
 	rm -rf $(OUT)
 nuke:
-	rm -rf build/* generated
+	rm -rf build/*
+	rm -rf generated/resources/fonts/droid
+	rm -rf generated/resources/fonts/han
+	rm -rf generated/resources/fonts/noto
+	rm -rf generated/resources/fonts/sil
 
 release:
 	$(MAKE) build=release

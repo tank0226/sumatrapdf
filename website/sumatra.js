@@ -1,8 +1,10 @@
 // update after releasing a new version
-var gSumVer = "3.2";
+var gSumVer = "3.3.1";
 
 // used by download-prev* pages, update after releasing a new version
 var gPrevSumatraVersion = [
+  "3.3",
+  "3.2",
   "3.1.2",
   "3.1.1",
   "3.1",
@@ -46,9 +48,12 @@ var gPrevSumatraVersion = [
   "0.2"
 ];
 
-var dlPrefix = "/dl/";
-var dlPrefix2 = "/dl2/";
-var host = "https://www.sumatrapdfreader.org";
+//var dlPrefix = "/dl/";
+var dlPrefix = "https://kjkpub.nyc3.digitaloceanspaces.com/software/sumatrapdf/rel/";
+//var dlPrefix2 = "/dl2/";
+var dlPrefix2 = "https://kjkpubsf.sfo2.digitaloceanspaces.com/software/sumatrapdf/rel/";
+//var host = "https://www.sumatrapdfreader.org";
+var host = "";
 
 function a(href, txt) {
   return '<a href="' + href + '">' + txt + "</a>";

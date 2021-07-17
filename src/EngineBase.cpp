@@ -9,7 +9,6 @@
 
 #include "wingui/TreeModel.h"
 
-#include "Annotation.h"
 #include "EngineBase.h"
 
 void FreePageText(PageText* pageText) {
@@ -335,6 +334,17 @@ int TocItem::ChildCount() {
 }
 
 TreeItem* TocItem::ChildAt(int n) {
+    if (n == 0) {
+        currChild = child;
+        currChildNo = 0;
+        return child;
+    }
+    // speed up sequential iteration over children
+    if (currChild != nullptr && n == currChildNo + 1) {
+        currChild = currChild->next;
+        ++currChildNo;
+        return currChild;
+    }
     auto node = child;
     while (n > 0) {
         n--;
@@ -467,11 +477,11 @@ int EngineBase::PageCount() const {
     return pageCount;
 }
 
-RectF EngineBase::PageContentBox(int pageNo, [[maybe_unused]] RenderTarget target) {
+RectF EngineBase::PageContentBox(int pageNo, __unused RenderTarget target) {
     return PageMediabox(pageNo);
 }
 
-bool EngineBase::SaveFileAsPDF([[maybe_unused]] const char* pdfFileName, [[maybe_unused]] bool includeUserAnnots) {
+bool EngineBase::SaveFileAsPDF(__unused const char* pdfFileName, __unused bool includeUserAnnots) {
     return false;
 }
 
@@ -491,7 +501,7 @@ float EngineBase::GetFileDPI() const {
     return fileDPI;
 }
 
-PageDestination* EngineBase::GetNamedDest([[maybe_unused]] const WCHAR* name) {
+PageDestination* EngineBase::GetNamedDest(__unused const WCHAR* name) {
     return nullptr;
 }
 
@@ -545,7 +555,7 @@ PointF EngineBase::Transform(PointF pt, int pageNo, float zoom, int rotation, bo
 
 // skip file:// and maybe file:/// from s. It might be added by mupdf.
 // do not free the result
-const WCHAR* SkipFileProtocol(const WCHAR* s) {
+static const WCHAR* SkipFileProtocol(const WCHAR* s) {
     if (!str::StartsWithI(s, L"file://")) {
         return s;
     }
@@ -554,4 +564,19 @@ const WCHAR* SkipFileProtocol(const WCHAR* s) {
         s += 1;
     }
     return s;
+}
+
+// s could be in format "file://path.pdf#page=1"
+// We only want the "path.pdf"
+// caller must free
+// TODO: could also parse page=1 and return it so that
+// we can go to the right place
+WCHAR* CleanupFileURL(const WCHAR* s) {
+    s = SkipFileProtocol(s);
+    WCHAR* s2 = str::Dup(s);
+    WCHAR* s3 = str::FindChar(s2, L'#');
+    if (s3) {
+        *s3 = 0;
+    }
+    return s2;
 }

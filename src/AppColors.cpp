@@ -1,7 +1,6 @@
 /* Copyright 2021 the SumatraPDF project authors (see AUTHORS file).
    License: Simplified BSD (see COPYING.BSD) */
 #include "utils/BaseUtil.h"
-#include "utils/ColorUtil.h"
 #include "utils/WinUtil.h"
 
 #include "DisplayMode.h"
@@ -57,8 +56,10 @@ static COLORREF RgbToCOLORREF(COLORREF rgb) {
 // returns the background color for start page, About window and Properties dialog
 static COLORREF GetAboutBgColor() {
     COLORREF bgColor = ABOUT_BG_GRAY_COLOR;
-    if (ABOUT_BG_COLOR_DEFAULT != gGlobalPrefs->mainWindowBackground) {
-        bgColor = gGlobalPrefs->mainWindowBackground;
+
+    ParsedColor* bgParsed = GetPrefsColor(gGlobalPrefs->mainWindowBackground);
+    if (ABOUT_BG_COLOR_DEFAULT != bgParsed->col) {
+        bgColor = bgParsed->col;
     }
     return bgColor;
 }
@@ -88,6 +89,7 @@ static COLORREF GetNoDocBgColor() {
 
 COLORREF GetAppColor(AppColor col, bool ebook) {
     COLORREF c;
+    ParsedColor* parsedCol;
 
     if (col == AppColor::NoDocBg) {
         // GetCurrentTheme()->document.canvasColor
@@ -124,21 +126,21 @@ COLORREF GetAppColor(AppColor col, bool ebook) {
             }
             return c;
         }
-
+        ParsedColor* bgParsed = GetPrefsColor(gGlobalPrefs->mainWindowBackground);
         if (ebook) {
             if (gGlobalPrefs->fixedPageUI.invertColors) {
-                c = gGlobalPrefs->ebookUI.textColor;
+                parsedCol = GetPrefsColor(gGlobalPrefs->ebookUI.textColor);
             } else {
-                c = gGlobalPrefs->ebookUI.backgroundColor;
+                parsedCol = GetPrefsColor(gGlobalPrefs->ebookUI.backgroundColor);
             }
         } else {
             if (gGlobalPrefs->fixedPageUI.invertColors) {
-                c = gGlobalPrefs->fixedPageUI.textColor;
+                parsedCol = GetPrefsColor(gGlobalPrefs->fixedPageUI.textColor);
             } else {
-                c = gGlobalPrefs->fixedPageUI.backgroundColor;
+                parsedCol = GetPrefsColor(gGlobalPrefs->fixedPageUI.backgroundColor);
             }
         }
-        return c;
+        return parsedCol->col;
     }
 
     if (col == AppColor::DocumentText) {
@@ -153,18 +155,18 @@ COLORREF GetAppColor(AppColor col, bool ebook) {
 
         if (ebook) {
             if (gGlobalPrefs->fixedPageUI.invertColors) {
-                c = gGlobalPrefs->ebookUI.backgroundColor;
+                parsedCol = GetPrefsColor(gGlobalPrefs->ebookUI.backgroundColor);
             } else {
-                c = gGlobalPrefs->ebookUI.textColor;
+                parsedCol = GetPrefsColor(gGlobalPrefs->ebookUI.textColor);
             }
         } else {
             if (gGlobalPrefs->fixedPageUI.invertColors) {
-                c = gGlobalPrefs->fixedPageUI.backgroundColor;
+                parsedCol = GetPrefsColor(gGlobalPrefs->fixedPageUI.backgroundColor);
             } else {
-                c = gGlobalPrefs->fixedPageUI.textColor;
+                parsedCol = GetPrefsColor(gGlobalPrefs->fixedPageUI.textColor);
             }
         }
-        return c;
+        return parsedCol->col;
     }
 
     if (col == AppColor::NotificationsBg) {

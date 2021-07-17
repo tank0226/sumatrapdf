@@ -20,6 +20,7 @@
 #include "DisplayMode.h"
 #include "SumatraPDF.h"
 #include "AppTools.h"
+#include "AppUtil.h"
 #include "CrashHandler.h"
 #include "Version.h"
 #include "SumatraConfig.h"
@@ -51,16 +52,11 @@ static bool gDisableSymbolsDownload = false;
 // Get url for file with symbols. Caller needs to free().
 static WCHAR* BuildSymbolsUrl() {
     const WCHAR* urlBase = nullptr;
-    if (gIsDailyBuild) {
-        // daily is also pre-release, just stored under a different url
-        urlBase = DLURLBASE "daily/SumatraPDF-prerel-" TEXT(QM(PRE_RELEASE_VER));
+    if (gIsPreReleaseBuild) {
+        urlBase = DLURLBASE "prerel/SumatraPDF-prerel-" TEXT(QM(PRE_RELEASE_VER));
     } else {
-        if (gIsPreReleaseBuild) {
-            urlBase = DLURLBASE "prerel/SumatraPDF-prerel-" TEXT(QM(PRE_RELEASE_VER));
-        } else {
-            // assuming this is release vers
-            urlBase = DLURLBASE "rel/SumatraPDF-" TEXT(QM(CURR_VERSION));
-        }
+        // assuming this is release vers
+        urlBase = DLURLBASE "rel/SumatraPDF-" TEXT(QM(CURR_VERSION));
     }
     const WCHAR* is64 = IsProcess64() ? L"-64" : L"";
     return str::Format(L"%s%s.pdb.lzsa", urlBase, is64);
@@ -101,8 +97,43 @@ WCHAR* gCrashFilePath = nullptr;
 static MINIDUMP_EXCEPTION_INFORMATION gMei = {0};
 static LPTOP_LEVEL_EXCEPTION_FILTER gPrevExceptionFilter = nullptr;
 
-static std::span<u8> BuildCrashInfoText() {
+// returns true if running on wine (winex11.drv is present)
+// it's not a logical, but convenient place to do it
+static bool GetModules(str::Str& s, bool additionalOnly) {
+    bool isWine = false;
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
+    if (snap == INVALID_HANDLE_VALUE) {
+        return true;
+    }
+
+    MODULEENTRY32 mod;
+    mod.dwSize = sizeof(mod);
+    BOOL cont = Module32First(snap, &mod);
+    while (cont) {
+        auto nameA = ToUtf8Temp(mod.szModule);
+        if (str::EqI(nameA.Get(), "winex11.drv")) {
+            isWine = true;
+        }
+        auto pathA = ToUtf8Temp(mod.szExePath);
+        if (additionalOnly && gModulesInfo) {
+            auto pos = str::FindI(gModulesInfo, pathA);
+            if (!pos) {
+                s.AppendFmt("Module: %p %06X %-16s %s\n", mod.modBaseAddr, mod.modBaseSize, nameA.Get(), pathA.Get());
+            }
+        } else {
+            s.AppendFmt("Module: %p %06X %-16s %s\n", mod.modBaseAddr, mod.modBaseSize, nameA.Get(), pathA.Get());
+        }
+        cont = Module32Next(snap, &mod);
+    }
+    CloseHandle(snap);
+    return isWine;
+}
+
+static std::string_view BuildCrashInfoText(bool forCrash) {
     str::Str s(16 * 1024, gCrashHandlerAllocator);
+    if (!forCrash) {
+        s.Append("Type: deubg report (not crash)\n");
+    }
     if (gSystemInfo) {
         s.Append(gSystemInfo);
     }
@@ -110,10 +141,19 @@ static std::span<u8> BuildCrashInfoText() {
     GetStressTestInfo(&s);
     s.Append("\n");
 
-    dbghelp::GetExceptionInfo(s, gMei.ExceptionPointers);
+    if (forCrash) {
+        dbghelp::GetExceptionInfo(s, gMei.ExceptionPointers);
+    } else {
+        // This is not a crash but debug report, we don't have an exception
+        s.Append("\r\nCrashed thread:\r\n");
+        dbghelp::GetCurrentThreadCallstack(s);
+    }
+
     dbghelp::GetAllThreadsCallstacks(s);
     s.Append("\n");
     s.Append(gModulesInfo);
+    s.Append("\nModules loaded later:\n");
+    GetModules(s, true);
 
     s.Append("\n\n-------- Log -----------------\n\n");
     s.AppendView(gLogBuf->AsView());
@@ -123,7 +163,7 @@ static std::span<u8> BuildCrashInfoText() {
         s.Append(gSettingsFile);
     }
 
-    return s.StealAsSpan();
+    return s.StealAsView();
 }
 
 static void SaveCrashInfo(std::span<u8> d) {
@@ -178,7 +218,7 @@ static bool ExtractSymbols(const u8* archiveData, size_t dataSize, char* dstDir,
         if (!uncompressed) {
             return false;
         }
-        char* filePath = path::JoinUtf(dstDir, name, allocator);
+        char* filePath = path::Join(dstDir, name, allocator);
         if (!filePath) {
             return false;
         }
@@ -225,9 +265,7 @@ static bool DownloadAndUnzipSymbols(const WCHAR* symDir) {
         dbglog("DownloadAndUnzipSymbols: HttpRspOk() returned false\n");
     }
 
-    char symDirUtf[512];
-
-    strconv::WcharToUtf8Buf(symDir, symDirUtf, sizeof(symDirUtf));
+    auto symDirUtf = ToUtf8Temp(symDir);
     bool ok = ExtractSymbols((const u8*)rsp.data.Get(), rsp.data.size(), symDirUtf, gCrashHandlerAllocator);
     if (!ok) {
         dbglog("DownloadAndUnzipSymbols: ExtractSymbols() failed\n");
@@ -271,41 +309,68 @@ bool CrashHandlerDownloadSymbols() {
     return true;
 }
 
-// If we can't resolve the symbols, we assume it's because we don't have symbols
-// so we'll try to download them and retry. If we can resolve symbols, we'll
-// get the callstacks etc. and submit to our server for analysis.
-void SubmitCrashInfo() {
-    dbglog("SubmitCrashInfo()\n");
+// like crash report, but can be triggered without a crash
+void SubmitDebugReport(const char* condStr) {
     if (!CrashHandlerCanUseNet()) {
-        dbglog("SubmitCrashInfo(): skipping because !CrashHandlerCanUseNet()\n");
         return;
     }
 
-    dbglogf(L"SubmitCrashInfo: gSymbolPathW: '%s'\n", gSymbolPathW);
+    dbglogf(L"SubmitDebugReport: gSymbolPathW: '%s'\n", gSymbolPathW);
 
     bool ok = CrashHandlerDownloadSymbols();
     if (!ok) {
-        dbglog("SubmitCrashInfo(): CrashHandlerDownloadSymbols() failed\n");
-    }
-
-    std::span<u8> d = BuildCrashInfoText();
-    if (d.empty()) {
-        dbglog("SubmitCrashInfo(): skipping because !BuildCrashInfoText()\n");
+        dbglog("SubmitDebugReport(): CrashHandlerDownloadSymbols() failed\n");
         return;
     }
-    SaveCrashInfo(d);
+
+    auto sv = BuildCrashInfoText(false);
+    if (sv.empty()) {
+        dbglog("SubmitDebugReport(): skipping because !BuildCrashInfoText()\n");
+        return;
+    }
+    auto d = ToSpanU8(sv);
+    // SaveCrashInfo(d);
     SendCrashInfo(d);
-    gCrashHandlerAllocator->Free((const void*)d.data());
-    dbglog("SubmitCrashInfo() finished\n");
+    // gCrashHandlerAllocator->Free((const void*)d.data());
+    dbglog("SubmitDebugReport() finished\n");
 }
 
-static DWORD WINAPI CrashDumpThread([[maybe_unused]] LPVOID data) {
+// If we can't resolve the symbols, we assume it's because we don't have symbols
+// so we'll try to download them and retry. If we can resolve symbols, we'll
+// get the callstacks etc. and submit to our server for analysis.
+void SubmitCrashReport() {
+    dbglog("SubmitCrashReport()\n");
+    if (!CrashHandlerCanUseNet()) {
+        dbglog("SubmitCrashReport(): skipping because !CrashHandlerCanUseNet()\n");
+        return;
+    }
+
+    dbglogf(L"SubmitCrashReport: gSymbolPathW: '%s'\n", gSymbolPathW);
+
+    bool ok = CrashHandlerDownloadSymbols();
+    if (!ok) {
+        dbglog("SubmitCrashReport(): CrashHandlerDownloadSymbols() failed\n");
+    }
+
+    auto sv = BuildCrashInfoText(true);
+    if (sv.empty()) {
+        dbglog("SubmitCrashReport(): skipping because !BuildCrashInfoText()\n");
+        return;
+    }
+    auto d = ToSpanU8(sv);
+    SaveCrashInfo(d);
+    SendCrashInfo(d);
+    // gCrashHandlerAllocator->Free((const void*)d.data());
+    dbglog("SubmitCrashReport() finished\n");
+}
+
+static DWORD WINAPI CrashDumpThread(__unused LPVOID data) {
     WaitForSingleObject(gDumpEvent, INFINITE);
     if (!gCrashed) {
         return 0;
     }
 
-    SubmitCrashInfo();
+    SubmitCrashReport();
 
     // always write a MiniDump (for the latest crash only)
     // set the SUMATRAPDF_FULLDUMP environment variable for more complete dumps
@@ -344,7 +409,7 @@ static LONG WINAPI DumpExceptionHandler(EXCEPTION_POINTERS* exceptionInfo) {
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
-static const char* OsNameFromVer(OSVERSIONINFOEX ver) {
+static const char* OsNameFromVer(const OSVERSIONINFOEX& ver) {
     if (VER_PLATFORM_WIN32_NT != ver.dwPlatformId) {
         return "9x";
     }
@@ -511,35 +576,10 @@ static void GetSystemInfo(str::Str& s) {
     // * processor capabilities (mmx, sse, sse2 etc.)
 }
 
-// returns true if running on wine (winex11.drv is present)
-// it's not a logical, but convenient place to do it
-static bool GetModules(str::Str& s) {
-    bool isWine = false;
-    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
-    if (snap == INVALID_HANDLE_VALUE) {
-        return true;
-    }
-
-    MODULEENTRY32 mod;
-    mod.dwSize = sizeof(mod);
-    BOOL cont = Module32First(snap, &mod);
-    while (cont) {
-        AutoFree nameA(strconv::WstrToUtf8(mod.szModule));
-        if (str::EqI(nameA.Get(), "winex11.drv")) {
-            isWine = true;
-        }
-        AutoFree pathA(strconv::WstrToUtf8(mod.szExePath));
-        s.AppendFmt("Module: %p %06X %-16s %s\n", mod.modBaseAddr, mod.modBaseSize, nameA.Get(), pathA.Get());
-        cont = Module32Next(snap, &mod);
-    }
-    CloseHandle(snap);
-    return isWine;
-}
-
 // returns true if running on wine
 static bool BuildModulesInfo() {
     str::Str s(1024);
-    bool isWine = GetModules(s);
+    bool isWine = GetModules(s, false);
     gModulesInfo = s.StealData();
     return isWine;
 }
@@ -550,10 +590,6 @@ static void BuildSystemInfo() {
     GetOsVersion(s);
     GetSystemInfo(s);
     gSystemInfo = s.StealData();
-}
-
-void SendCrashReport(const char* condStr) {
-    // TODO: implement me
 }
 
 /* Setting symbol path:
@@ -623,7 +659,7 @@ bool SetSymbolsDir(const WCHAR* symDir) {
     return true;
 }
 
-void __cdecl onSignalAbort([[maybe_unused]] int code) {
+void __cdecl onSignalAbort(__unused int code) {
     // put the signal back because can be called many times
     // (from multiple threads) and raise() resets the handler
     signal(SIGABRT, onSignalAbort);
@@ -643,9 +679,6 @@ int __cdecl _purecall() {
     CrashMe();
     return 0;
 }
-
-// in SumatraPDF.cpp
-extern bool IsDllBuild();
 
 void InstallCrashHandler(const WCHAR* crashDumpPath, const WCHAR* crashFilePath, const WCHAR* symDir) {
     CrashIf(gDumpEvent || gDumpThread);
